@@ -1,0 +1,54 @@
+# 筹码质量策略 - 最终调试参数
+
+# 经过测试验证的参数配置
+CHIP_QUALITY_PARAMS = {
+    # 风控参数
+    'n_lookback': 5,              # 考察期天数
+    'max_amplitude': 8.0,         # 最大日均振幅(%)
+    'shadow_threshold': 3.0,       # 影线阈值(%)
+    
+    # 换手率参数（已优化）
+    'turnover_min': 5.0,           # 良性换手下限(%) - 降低从8.0
+    'turnover_max': 25.0,          # 良性换手上限(%) - 提高从20.0
+    'turnover_high': 40.0,         # 过度换手阈值(%) - 提高从35.0
+    'min_volume_ratio': 2.0,       # 最小量比
+    
+    # 评分参数
+    'scoring': {
+        # 封单金额评分
+        'seal_1e9': 5,              # 封单1亿以上 +5分
+        'seal_5e8': 3,              # 封单5000万以上 +3分
+        'seal_2e8': 1,              # 封单2000万以上 +1分
+        
+        # 连板数评分
+        'limit_count_gte3': 3,        # 3连板以上 +3分
+        'limit_count_eq2': 2,        # 2连板 +2分
+        'limit_count_eq1': 1,        # 1连板 +1分
+        
+        # 换手率评分
+        'turnover_good_min': 5.0,     # 良性换手下限
+        'turnover_good_max': 25.0,    # 良性换手上限
+        'turnover_high': 40.0,        # 过度换手阈值
+        
+        # 一字板扣分
+        'yizi_penalty': -3,           # 一字板扣3分
+        
+        # 弱转强加分
+        'weak_to_strong_bonus': 20,   # 烂板分歧+高开缩量封板 +20分
+    }
+}
+
+# 使用示例
+"""
+from chip_quality_strategy import ChipQualityStrategy
+from data_fetcher import DataFetcher
+
+# 初始化
+fetcher = DataFetcher()
+strategy = ChipQualityStrategy(fetcher, CHIP_QUALITY_PARAMS)
+
+# 分析股票
+result = strategy.analyze_stock('000001.SZ', days=30)
+print(f"得分: {result['total_score']}")
+print(f"通过风控: {result['pass_risk_filter']}")
+"""

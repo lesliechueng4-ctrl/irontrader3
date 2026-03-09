@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IronTrader - 智能铁律交易系统</title>
+    <!-- Original IronTrader Styles -->
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <!-- ECharts for AI Tab -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+
+    <style>
+        /* === Tab System Styles === */
+        .tab-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px;
+            border-radius: 12px;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1.1rem;
+            padding: 10px 30px;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        .tab-btn.active {
+            background: white;
+            color: #667eea;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* === Merged AI Predictor Styles (from irontrader2) === */
+        /* Scoped slightly to avoid conflicts, though class names are mostly unique */
+        .ai-panel .main-card {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .ai-panel .search-section {
+            margin-bottom: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 15px;
+        }
+
+        .ai-panel .search-box {
+            position: relative;
+        }
+
+        .ai-panel .search-input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1rem;
+        }
+
+        .ai-panel .search-results {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 2px solid #667eea;
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .ai-panel .search-results.active {
+            display: block;
+        }
+
+        .ai-panel .search-item {
+            padding: 12px 15px;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f0;
+            color: #333;
+        }
+
+        .ai-panel .search-item:hover {
+            background: #f8f9fa;
+        }
+
+        .ai-panel .search-item-code {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .ai-panel .search-item-name {
+            margin-left: 10px;
+            color: #666;
+        }
+
+        .ai-panel .control-panel {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .ai-panel .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ai-panel .form-group label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+            font-size: 0.9rem;
+        }
+
+        .ai-panel .form-group select,
+        .ai-panel .form-group input {
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1rem;
+        }
+
+        .ai-panel .btn-predict {
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .ai-panel .btn-predict:hover {
+            transform: translateY(-2px);
+        }
+
+        .ai-panel .btn-predict:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .ai-panel .loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            color: #667eea;
+        }
+
+        .ai-panel .loading.active {
+            display: block;
+        }
+
+        .ai-panel .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .ai-panel .results {
+            display: none;
+        }
+
+        .ai-panel .results.active {
+            display: block;
+        }
+
+        .ai-panel .info-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+        }
+
+        .ai-panel .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .ai-panel .info-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 10px;
+        }
+
+        .ai-panel .info-item-label {
+            font-size: 0.85rem;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .ai-panel .info-item-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .ai-panel .chart-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            color: #333;
+        }
+
+        .ai-panel .predictions-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            color: #333;
+        }
+
+        .ai-panel .predictions-table th {
+            background: #f8f9fa;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .ai-panel .predictions-table td {
+            padding: 12px;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .ai-panel .signal-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .ai-panel .signal-long {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .ai-panel .signal-neutral {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .ai-panel .signal-short {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .ai-panel .positive {
+            color: #28a745;
+            font-weight: 600;
+        }
+
+        .ai-panel .negative {
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .ai-panel .features-section {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            color: #333;
+        }
+
+        .ai-panel .feature-bar {
+            margin: 10px 0;
+            padding: 12px;
+            background: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+        }
+
+        .ai-panel .feature-name {
+            flex: 1;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .ai-panel .feature-value {
+            margin-left: 10px;
+            font-weight: 700;
+            min-width: 80px;
+            text-align: right;
+        }
+
+        .ai-panel .feature-bar-visual {
+            margin-top: 5px;
+            height: 4px;
+            background: #e9ecef;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .ai-panel .feature-bar-fill {
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 背景装饰 -->
+    <div class="background-gradient"></div>
+
+    <!-- 主容器 -->
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">⚡</div>
+                <div class="logo-text">
+                    <h1>IronTrader</h1>
+                    <p>铁律交易 & 智能预测</p>
+                </div>
+            </div>
+            <div class="header-info">
+                <div class="time-display" id="currentTime">--:--:--</div>
+                <div class="motto">绝对的客观 · 绝对的纪律</div>
+            </div>
+        </header>
+
+        <!-- Tabs -->
+        <div class="tab-container">
+            <button class="tab-btn active" onclick="switchTab('dashboard')">📊 市场概览</button>
+            <button class="tab-btn" onclick="switchTab('ai')">🤖 AI 预测</button>
+        </div>
+
+        <!-- Tab 1: Market Dashboard -->
+        <div id="tab-dashboard" class="tab-content active">
+            <!-- 市场状态卡片 -->
+            <section class="market-state-section">
+                <div class="section-title">
+                    <span class="icon">📊</span>
+                    <h2>市场五态</h2>
+                    <button class="refresh-btn" id="refreshMarket">🔄</button>
+                </div>
+
+                <div class="market-state-card" id="marketStateCard">
+                    <div class="state-loading">
+                        <div class="spinner"></div>
+                        <p>正在获取市场数据...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 股票分析区 -->
+            <section class="stock-analysis-section">
+                <div class="section-title">
+                    <span class="icon">🔍</span>
+                    <h2>个股决策</h2>
+                </div>
+
+                <div class="search-container">
+                    <input type="text" id="stockInput" placeholder="输入股票代码 (如: 600519, 000001, 300750)" maxlength="6">
+                    <button id="analyzeBtn" class="primary-btn">
+                        <span>分析</span>
+                        <span class="btn-arrow">→</span>
+                    </button>
+                </div>
+
+                <div class="decision-result" id="decisionResult" style="display: none;"></div>
+            </section>
+
+            <!-- 主线热度与涨停池 -->
+            <section class="data-grid">
+                <div class="data-card">
+                    <div class="section-title">
+                        <span class="icon">🔥</span>
+                        <h2>主线热度</h2>
+                        <span class="badge" id="sectorCount">0</span>
+                    </div>
+                    <div class="hot-sectors-list" id="hotSectorsList">
+                        <div class="loading-placeholder">加载中...</div>
+                    </div>
+                </div>
+
+                <div class="data-card">
+                    <div class="section-title">
+                        <span class="icon">📈</span>
+                        <h2>涨停股池</h2>
+                        <span class="badge" id="ztCount">0</span>
+                        <button class="refresh-btn" id="refreshZtPool" title="强制刷新">🔄</button>
+                    </div>
+                    <div class="zt-pool-list" id="ztPoolList">
+                        <div class="loading-placeholder">加载中...</div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Tab 2: AI Predictor -->
+        <div id="tab-ai" class="tab-content ai-panel">
+            <div class="main-card">
+                <div class="search-section">
+                    <label style="font-weight: 600; margin-bottom: 8px; display: block; color: #333;">🔍
+                        智能搜索（预测未来趋势）</label>
+                    <div class="search-box">
+                        <input type="text" id="stock-search" class="search-input"
+                            placeholder="输入股票代码或名称，如：600151 或 航天机电">
+                        <div class="search-results" id="search-results"></div>
+                    </div>
+                </div>
+                <div class="control-panel">
+                    <div class="form-group">
+                        <label for="days-input">预测天数</label>
+                        <input type="number" id="days-input" value="5" min="1" max="10">
+                    </div>
+                    <div class="form-group">
+                        <label>&nbsp;</label>
+                        <button class="btn-predict" id="btn-predict">开始 ARGO 预测</button>
+                    </div>
+                </div>
+
+                <div class="loading" id="ai-loading">
+                    <div class="spinner"></div>
+                    <p>正在分析数据并生成预测...</p>
+                </div>
+
+                <div class="results" id="ai-results">
+                    <div class="info-card">
+                        <h2 id="stock-title">股票信息</h2>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <div class="info-item-label">当前价格</div>
+                                <div class="info-item-value" id="current-price">--</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-item-label">股票类型</div>
+                                <div class="info-item-value" id="stock-type">--</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-item-label">预测方向</div>
+                                <div class="info-item-value" id="prediction-direction">--</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-item-label">预测收益</div>
+                                <div class="info-item-value" id="prediction-return">--</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chart-section">
+                        <h3>📈 历史价格走势</h3>
+                        <div id="price-chart" style="width: 100%; height: 500px;"></div>
+                    </div>
+
+                    <h3>未来走势预测</h3>
+                    <table class="predictions-table">
+                        <thead>
+                            <tr>
+                                <th>日期</th>
+                                <th>预测价格</th>
+                                <th>累计涨跌</th>
+                                <th>交易信号</th>
+                                <th>置信度</th>
+                            </tr>
+                        </thead>
+                        <tbody id="predictions-tbody"></tbody>
+                    </table>
+
+                    <div class="features-section">
+                        <h3>📊 关键影响因子（特征重要性）</h3>
+                        <div id="features-container"></div>
+                    </div>
+
+                    <!-- RAG Section -->
+                    <div class="rag-section"
+                        style="margin-top: 20px; border-top: 1px solid #e0e0e0; padding-top: 20px;">
+                        <button onclick="generateRAGReport()" class="btn-predict"
+                            style="background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%); width: 100%;">
+                            🧠 生成深度投资报告 (AI + News)
+                        </button>
+
+                        <div id="rag-loading" class="loading" style="margin-top: 15px;">
+                            <div class="spinner"></div>
+                            <p>🤖 AI 正在阅读新闻并撰写报告...</p>
+                        </div>
+
+                        <div id="rag-result"
+                            style="display: none; margin-top: 20px; background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #FF6B6B; color: #333; line-height: 1.6;">
+                            <!-- AI Report Content -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="cache-info"
+                style="text-align: center; color: rgba(255,255,255,0.7); margin-top: 10px; font-size: 0.8rem;"></div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="disclaimer">
+                <p>⚠️ 免责声明：本系统仅供学习研究使用，不构成任何投资建议。股市有风险，投资需谨慎。</p>
+            </div>
+            <div class="footer-info">
+                <p>IronTrader v2.1 Integrated | 数据来源: AKShare & Sina Finance</p>
+            </div>
+        </footer>
+    </div>
+
+    // Scripts -->
+    <script src="/static/app.js"></script>
+    <script>
+        // 添加涨停股池刷新按钮事件
+        document.addEventListener('DOMContentLoaded', function () {
+            const refreshZtPoolBtn = document.getElementById('refreshZtPool');
+            if (refreshZtPoolBtn) {
+                refreshZtPoolBtn.addEventListener('click', function() {
+                    loadZtPool(true);  // 传递 true 强制刷新
+                });
+            }
+        });
+    </script>
+    <script>
+        // === Tab Switching Logic ===
+        function switchTab(tabName) {
+            // Buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+
+            // Content
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById('tab-' + tabName).classList.add('active');
+
+            // Resize charts if needed
+            if (tabName === 'ai' && window.priceChart) {
+                setTimeout(() => window.priceChart.resize(), 100);
+            }
+        }
+
+        // === AI Predictor Logic (Ported from irontrader2) ===
+        let searchTimeout;
+        let selectedTicker = '';
+        window.priceChart = null; // Global for resize
+
+        document.addEventListener('DOMContentLoaded', function () {
+            // Load Cache Info
+            fetch('/api/cache/info').then(res => res.json()).then(res => {
+                if (res.success && res.data.cached_stocks) {
+                    document.getElementById('cache-info').textContent = 'AI模型缓存: ' + res.data.cached_stocks + '只股票';
+                }
+            }).catch(e => console.log(e));
+
+            // AI Event Listeners
+            document.getElementById('btn-predict').addEventListener('click', predictAI);
+            document.getElementById('stock-search').addEventListener('input', handleAISearch);
+
+            // Close search on click outside
+            document.addEventListener('click', function (e) {
+                if (!e.target.closest('.search-box')) {
+                    document.getElementById('search-results').classList.remove('active');
+                }
+            });
+        });
+
+        function handleAISearch(e) {
+            const keyword = e.target.value.trim();
+            clearTimeout(searchTimeout);
+            if (keyword.length < 2) { document.getElementById('search-results').classList.remove('active'); return; }
+            searchTimeout = setTimeout(function () { searchAIStocks(keyword); }, 300);
+        }
+
+        async function searchAIStocks(keyword) {
+            try {
+                const response = await fetch('/api/search_stock?keyword=' + encodeURIComponent(keyword));
+                const result = await response.json();
+                if (result.success && result.data.length > 0) {
+                    const resultsDiv = document.getElementById('search-results');
+                    resultsDiv.innerHTML = '';
+                    result.data.forEach(function (stock) {
+                        const item = document.createElement('div');
+                        item.className = 'search-item';
+                        item.innerHTML = '<span class="search-item-code">' + stock.code + '</span><span class="search-item-name">' + stock.name + '</span>';
+                        item.onclick = function () {
+                            selectedTicker = stock.code;
+                            document.getElementById('stock-search').value = stock.code + ' - ' + stock.name;
+                            document.getElementById('search-results').classList.remove('active');
+                        };
+                        resultsDiv.appendChild(item);
+                    });
+                    resultsDiv.classList.add('active');
+                } else {
+                    document.getElementById('search-results').classList.remove('active');
+                }
+            } catch (error) { console.error('搜索失败:', error); }
+        }
+
+        // Global check for RAG
+        let currentTechData = null;
+
+        async function generateRAGReport() {
+            if (!selectedTicker || !currentTechData) {
+                return alert("请先运行AI预测，等待结果生成后再点击此按钮。");
+            }
+
+            document.getElementById('rag-loading').classList.add('active');
+            document.getElementById('rag-result').style.display = 'none';
+
+            try {
+                const response = await fetch('/api/analyze/rag', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ticker: selectedTicker,
+                        technical_info: currentTechData
+                    })
+                });
+
+                const res = await response.json();
+                if (res.success) {
+                    // Simple Markdown Rendering
+                    let html = res.data
+                        .replace(/\n/g, '<br>')
+                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/- /g, '&bull; ');
+
+                    const resultDiv = document.getElementById('rag-result');
+                    resultDiv.innerHTML = html;
+                    resultDiv.style.display = 'block';
+                } else {
+                    alert('报告生成失败: ' + res.error);
+                }
+            } catch (e) {
+                alert('RAG请求错误: ' + e);
+            } finally {
+                document.getElementById('rag-loading').classList.remove('active');
+            }
+        }
+
+        async function predictAI() {
+            // Support inputting code directly even if not selected from dropdown
+            let ticker = selectedTicker;
+            const rawInput = document.getElementById('stock-search').value;
+            if (!ticker && rawInput) {
+                // Try to extract code from input (e.g. "600519" or "600519 - Moutai")
+                const match = rawInput.match(/\d{6}/);
+                if (match) ticker = match[0];
+            }
+
+            if (!ticker) { alert('请先搜索并选择一只股票'); return; }
+
+            // Sync global ticker for RAG in case it was manually entered
+            selectedTicker = ticker;
+
+            const nDays = document.getElementById('days-input').value;
+
+            document.getElementById('ai-loading').classList.add('active');
+            document.getElementById('ai-results').classList.remove('active');
+            document.getElementById('btn-predict').disabled = true;
+
+            try {
+                const response = await fetch('/api/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: ticker, n_days: parseInt(nDays) })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    currentTechData = result.data.info; // Store for RAG
+                    displayAIResults(result.data);
+                } else {
+                    alert('预测失败: ' + (result.error || '未知错误'));
+                }
+            } catch (error) {
+                alert('请求失败: ' + error.message);
+            } finally {
+                document.getElementById('ai-loading').classList.remove('active');
+                document.getElementById('btn-predict').disabled = false;
+            }
+        }
+
+        function displayAIResults(data) {
+            const info = data.info;
+            const predictions = data.predictions;
+
+            document.getElementById('stock-title').textContent = info.ticker + ' - ' + (info.stock_type || '未知类型');
+            document.getElementById('current-price').textContent = '¥' + info.current_price.toFixed(2);
+            document.getElementById('stock-type').textContent = info.stock_type || 'N/A';
+
+            const predReturn = info.prediction * 100;
+            document.getElementById('prediction-direction').textContent = predReturn > 0.2 ? '看涨 ↗' : (predReturn < -0.2 ? '看跌 ↘' : '中性 →');
+            document.getElementById('prediction-return').innerHTML = '<span class="' + (predReturn > 0 ? 'positive' : 'negative') + '">' + (predReturn > 0 ? '+' : '') + predReturn.toFixed(2) + '%</span>';
+
+            // Render Chart
+            if (data.chart_data && data.chart_data.length > 0) {
+                renderPriceChart(data.chart_data, predictions);
+            }
+
+            // Table
+            const tbody = document.getElementById('predictions-tbody');
+            tbody.innerHTML = '';
+            predictions.forEach(function (pred) {
+                const row = tbody.insertRow();
+                row.insertCell(0).textContent = new Date(pred.date).toLocaleDateString('zh-CN');
+                row.insertCell(1).textContent = '¥' + pred.predicted_price.toFixed(2);
+                const cumReturn = pred.cumulative_return * 100;
+                row.insertCell(2).innerHTML = '<span class="' + (cumReturn > 0 ? 'positive' : 'negative') + '">' + (cumReturn > 0 ? '+' : '') + cumReturn.toFixed(2) + '%</span>';
+
+                let badgeClass = 'signal-neutral';
+                if (pred.signal === '做多') badgeClass = 'signal-long';
+                if (pred.signal === '做空') badgeClass = 'signal-short';
+
+                row.insertCell(3).innerHTML = '<span class="signal-badge ' + badgeClass + '">' + pred.signal + '</span>';
+                row.insertCell(4).textContent = (pred.confidence || 0).toFixed(1) + '%';
+            });
+
+            // Features (Simplified)
+            const featuresContainer = document.getElementById('features-container');
+            featuresContainer.innerHTML = '';
+            if (info.feature_importance) {
+                const sorted = Object.entries(info.feature_importance).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 5);
+                const maxVal = sorted.length ? Math.abs(sorted[0][1]) : 1;
+
+                sorted.forEach(([name, val]) => {
+                    const bar = document.createElement('div');
+                    bar.className = 'feature-bar';
+                    const widthPct = (Math.abs(val) / maxVal) * 100;
+                    const color = val > 0 ? '#28a745' : '#dc3545';
+                    bar.innerHTML = `
+                        <div style="flex: 1;">
+                            <div class="feature-name">${name}</div>
+                            <div class="feature-bar-visual"><div class="feature-bar-fill" style="width: ${widthPct}%; background: ${color};"></div></div>
+                        </div>
+                        <div class="feature-value ${val > 0 ? 'positive' : 'negative'}">${val > 0 ? '+' : ''}${val.toFixed(4)}</div>
+                    `;
+                    featuresContainer.appendChild(bar);
+                });
+            }
+
+            document.getElementById('ai-results').classList.add('active');
+        }
+
+        function renderPriceChart(chartData, predictions) {
+            const chartDom = document.getElementById('price-chart');
+            if (window.priceChart) { window.priceChart.dispose(); }
+            window.priceChart = echarts.init(chartDom);
+
+            const dates = chartData.map(d => d.date);
+            const data = chartData.map(d => [d.open, d.close, d.low, d.high]);
+
+            // Predictions
+            const lastClose = data[data.length - 1][1];
+            const predPrices = predictions.map(p => p.predicted_price);
+            const predDates = predictions.map(p => new Date(p.date).toISOString().split('T')[0]);
+
+            // Connect line
+            let lineData = new Array(dates.length - 1).fill(null);
+            lineData.push(lastClose);
+            predPrices.forEach(p => lineData.push(p));
+
+            const allDates = dates.concat(predDates);
+
+            const option = {
+                tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                grid: { left: '3%', right: '3%', bottom: '10%' },
+                xAxis: { type: 'category', data: allDates },
+                yAxis: { scale: true },
+                series: [
+                    {
+                        name: 'K线',
+                        type: 'candlestick',
+                        data: data,
+                        itemStyle: { color: '#ec0000', color0: '#00da3c', borderColor: '#8A0000', borderColor0: '#008F28' }
+                    },
+                    {
+                        name: '预测',
+                        type: 'line',
+                        data: lineData,
+                        smooth: true,
+                        lineStyle: { type: 'dashed', color: '#667eea' },
+                        symbol: 'none'
+                    }
+                ]
+            };
+            window.priceChart.setOption(option);
+        }
+    </script>
+</body>
+
+</html>
