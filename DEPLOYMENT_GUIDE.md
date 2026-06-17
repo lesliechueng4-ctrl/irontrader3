@@ -178,7 +178,7 @@ GET /api/stock/{code}
 
 如果需要进一步优化：
 
-1. 调整评分参数（修改 app.py config_chip_quality）
+1. 调整评分参数（修改 config.py 中的 ChipQualityParams）
 2. 添加更多风控规则（修改 chip_quality_strategy.py）
 3. 优化前端界面（修改 static/app_enhanced.js）
 4. 添加更多数据可视化（添加Chart.js等库）

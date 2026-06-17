@@ -14,6 +14,9 @@ import numpy as np
 from typing import Dict, Optional, List
 from data_fetcher import DataFetcher
 
+from logger_config import get_logger
+logger = get_logger(__name__)
+
 
 def _get_limit_up_threshold(code: str) -> float:
     """根据股票代码判断涨停阈值"""
@@ -140,7 +143,7 @@ class ChipQualityStrategy:
             df = self.data_fetcher.get_stock_history(code, days=days)
             
             if df is None or len(df) < 10:
-                print(f"获取{code}数据失败：数据不足或获取失败")
+                logger.warning(f"获取{code}数据失败：数据不足或获取失败")
                 return None
             
             # 统一列名（data_fetcher返回的是小写，需要转换）
@@ -164,7 +167,7 @@ class ChipQualityStrategy:
             required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             if not all(col in df.columns for col in required_cols):
                 missing = [c for c in required_cols if c not in df.columns]
-                print(f"获取{code}数据失败：缺少列 {missing}")
+                logger.warning(f"获取{code}数据失败：缺少列 {missing}")
                 return None
             
             # 确保数值类型正确
@@ -174,7 +177,7 @@ class ChipQualityStrategy:
             return df
             
         except Exception as e:
-            print(f"获取{code}数据失败: {e}")
+            logger.warning(f"获取{code}数据失败: {e}")
             return None
     
     def _add_indicators(self, df: pd.DataFrame, code: str = '') -> pd.DataFrame:
@@ -819,7 +822,7 @@ class ChipQualityStrategy:
         Returns:
             {code: analysis_result}
         """
-        print(f"[筹码质量分析] 开始批量分析 {len(codes)} 只股票...")
+        logger.info(f"[筹码质量分析] 开始批量分析 {len(codes)} 只股票...")
         
         pool_data = pool_data if pool_data is not None else self.data_fetcher.get_limit_up_pool()
         market_sentiment = self.data_fetcher.get_market_sentiment(pool_data)
@@ -853,13 +856,13 @@ class ChipQualityStrategy:
                 
                 # 每10只打印进度
                 if (idx + 1) % 10 == 0:
-                    print(f"[筹码质量分析] 已完成 {idx + 1}/{len(codes)}...")
+                    logger.info(f"[筹码质量分析] 已完成 {idx + 1}/{len(codes)}...")
                     
             except Exception as e:
-                print(f"分析{code}失败: {e}")
+                logger.warning(f"分析{code}失败: {e}")
                 results[code] = self._error_result(code, str(e))
         
-        print(f"[筹码质量分析] 全部完成！")
+        logger.info(f"[筹码质量分析] 全部完成！")
         return results
     
     def get_high_quality_stocks(

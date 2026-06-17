@@ -46,7 +46,9 @@ class DataFetcherBoardSupportTest(unittest.TestCase):
 
         df = self.fetcher.get_stock_history("301183", days=2)
 
-        daily_mock.assert_called_once_with(symbol="sz301183", adjust="qfq")
+        daily_mock.assert_called_once()
+        self.assertEqual(daily_mock.call_args.kwargs["symbol"], "sz301183")
+        self.assertEqual(daily_mock.call_args.kwargs["adjust"], "qfq")
         hist_mock.assert_not_called()
         self.assertEqual(list(df.columns), ["date", "open", "high", "low", "close", "volume", "amount", "turnover"])
         self.assertEqual(len(df), 2)
@@ -72,7 +74,10 @@ class DataFetcherBoardSupportTest(unittest.TestCase):
 
         df = self.fetcher.get_stock_history("600519", days=1)
 
-        hist_mock.assert_called_once_with(symbol="600519", period="daily", adjust="qfq")
+        hist_mock.assert_called_once()
+        self.assertEqual(hist_mock.call_args.kwargs["symbol"], "600519")
+        self.assertEqual(hist_mock.call_args.kwargs["period"], "daily")
+        self.assertEqual(hist_mock.call_args.kwargs["adjust"], "qfq")
         self.assertEqual(list(df.columns), ["date", "open", "high", "low", "close", "volume", "amount", "turnover"])
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]["close"], 11.5)

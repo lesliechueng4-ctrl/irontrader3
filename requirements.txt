@@ -1,12 +1,17 @@
 # IronTrader 3.0 Dependencies
 # Install with: pip install -r requirements.txt
+#
+# Version floors reflect the versions verified working in the project's
+# virtualenv. Loosened to >= so newer compatible releases are allowed.
+# (Merged from the former requirements_phase2.txt.)
 
 # Core Web Framework
-Flask==2.3.3
+Flask>=3.0.0
+Flask-CORS>=4.0.0          # optional but recommended; enables CORS on /api/*
 
 # Data Processing
-pandas==2.0.3
-numpy==1.24.4
+pandas>=2.1.0
+numpy>=1.26.0
 
 # Financial Data
 akshare>=1.14.0

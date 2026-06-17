@@ -32,7 +32,7 @@ remain in the root until the project is converted into a package.
 - `risk_engine.py`
 - `stock_selector.py`
 - `chip_quality_strategy.py`
-- `config_chip_quality.py`
+- `config.py` (含 `ChipQualityParams`，原 `config_chip_quality.py` 已合并至此)
 - `strategy_enhancements.py`
 - `low_buy_engine.py`
 - `market_sentiment.py`

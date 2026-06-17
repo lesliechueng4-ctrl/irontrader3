@@ -58,7 +58,10 @@ def patched_get_environ_proxies(url, no_proxy=None):
 
 requests.utils.get_environ_proxies = patched_get_environ_proxies
 
-print("已启用四层代理禁用机制（环境变量 + urllib3 + HTTPAdapter + Windows注册表）")
+from logger_config import get_logger
+logger = get_logger(__name__)
+
+logger.info("已启用四层代理禁用机制（环境变量 + urllib3 + HTTPAdapter + Windows注册表）")
 
 # 现在可以安全导入akshare了
 import akshare as ak
@@ -211,7 +214,7 @@ class DataFetcher:
             
             result = self.source_client.get("tencent", url, headers=headers, timeout=5)
             if not result.ok:
-                print(f"腾讯数据源获取失败: {result.error}")
+                logger.warning(f"腾讯数据源获取失败: {result.error}")
                 return None
             resp = result.response
             
@@ -237,7 +240,7 @@ class DataFetcher:
                         'source': 'tencent'
                     }
         except Exception as e:
-            print(f"腾讯数据源获取失败: {e}")
+            logger.warning(f"腾讯数据源获取失败: {e}")
         
         return None
     
@@ -254,7 +257,7 @@ class DataFetcher:
             
             result = self.source_client.get("sina", url, headers=headers, timeout=5)
             if not result.ok:
-                print(f"新浪直接接口获取失败: {result.error}")
+                logger.warning(f"新浪直接接口获取失败: {result.error}")
                 return None
             resp = result.response
             
@@ -282,7 +285,7 @@ class DataFetcher:
                         'source': 'sina_direct'
                     }
         except Exception as e:
-            print(f"新浪直接接口获取失败: {e}")
+            logger.warning(f"新浪直接接口获取失败: {e}")
         
         return None
     
@@ -303,7 +306,7 @@ class DataFetcher:
             
             result = self.source_client.get("eastmoney", url, params=params, headers=headers, timeout=5)
             if not result.ok:
-                print(f"东方财富数据源获取失败: {result.error}")
+                logger.warning(f"东方财富数据源获取失败: {result.error}")
                 return None
             resp = result.response
             
@@ -324,7 +327,7 @@ class DataFetcher:
                         'source': 'eastmoney'
                     }
         except Exception as e:
-            print(f"东方财富数据源获取失败: {e}")
+            logger.warning(f"东方财富数据源获取失败: {e}")
         
         return None
     
@@ -349,15 +352,15 @@ class DataFetcher:
             try:
                 result = fetch_func()
                 if result and result.get('current', 0) > 0:
-                    print(f"[OK] 成功从{source_name}获取上证指数数据 (当前价: {result['current']}, 涨跌幅: {result['change_pct']}%)")
+                    logger.info(f"[OK] 成功从{source_name}获取上证指数数据 (当前价: {result['current']}, 涨跌幅: {result['change_pct']}%)")
                     self._set_cache(cache_key, result)
                     return result
             except Exception as e:
-                print(f"[FAIL] {source_name}获取失败: {e}")
+                logger.warning(f"[FAIL] {source_name}获取失败: {e}")
                 continue
         
         # 所有数据源都失败
-        print("[WARNING] 所有数据源获取上证指数失败，返回默认值")
+        logger.warning("[WARNING] 所有数据源获取上证指数失败，返回默认值")
         return {
             'code': '000001',
             'name': '上证指数',
@@ -406,7 +409,7 @@ class DataFetcher:
             self._set_cache(cache_key, df)
             return df
         except Exception as e:
-            print(f"获取上证指数历史数据失败: {e}")
+            logger.warning(f"获取上证指数历史数据失败: {e}")
             return pd.DataFrame()
     
     def calculate_ma5(self, df: pd.DataFrame) -> float:
@@ -463,7 +466,7 @@ class DataFetcher:
         if not force_refresh:
             cached = self._get_cache(cache_key)
             if cached:
-                print(f"Loaded {len(cached)} limit-up stocks from cache")
+                logger.info(f"Loaded {len(cached)} limit-up stocks from cache")
                 return cached
 
         columns = {
@@ -491,9 +494,9 @@ class DataFetcher:
 
         try:
             today_date = datetime.now().strftime('%Y%m%d')
-            print(f"Fetching limit-up pool for {today_date}...")
+            logger.info(f"Fetching limit-up pool for {today_date}...")
             df = ak.stock_zt_pool_em(date=today_date)
-            print(f"Fetched {len(df)} raw limit-up rows")
+            logger.info(f"Fetched {len(df)} raw limit-up rows")
 
             result = []
             for idx, row in df.iterrows():
@@ -519,19 +522,19 @@ class DataFetcher:
                         'limit_up_threshold': self._get_limit_up_threshold(stock_code),
                     })
                 except Exception as e:
-                    print(f"Failed to parse limit-up row {idx + 1}: {e}")
+                    logger.warning(f"Failed to parse limit-up row {idx + 1}: {e}")
                     continue
 
-            print(f"Parsed {len(result)} limit-up stocks")
+            logger.info(f"Parsed {len(result)} limit-up stocks")
             self._set_cache(cache_key, result)
             return result
         except Exception as e:
-            print(f"Failed to fetch limit-up pool: {e}")
+            logger.warning(f"Failed to fetch limit-up pool: {e}")
             import traceback
             traceback.print_exc()
             cached = self._get_cache(cache_key)
             if cached:
-                print(f"Returning stale limit-up cache with {len(cached)} rows")
+                logger.warning(f"Returning stale limit-up cache with {len(cached)} rows")
                 return cached
             return []
 
@@ -548,7 +551,7 @@ class DataFetcher:
 
             result = self.source_client.get("sina", url, headers=headers, timeout=5)
             if not result.ok:
-                print(f"Sina fetch failed for {clean_code}: {result.error}")
+                logger.warning(f"Sina fetch failed for {clean_code}: {result.error}")
                 return None
 
             resp = result.response
@@ -594,7 +597,7 @@ class DataFetcher:
                 'is_limit_up': self._check_limit_up(clean_code, change_pct),
             }
         except Exception as e:
-            print(f"Sina fetch failed for {clean_code}: {e}")
+            logger.info(f"Sina fetch failed for {clean_code}: {e}")
             return None
 
     def get_stock_realtime(self, code: str) -> Dict:
@@ -610,13 +613,13 @@ class DataFetcher:
             return cached
         
         try:
-            print(f"正在获取股票 {clean_code} 的实时数据 (Sina)...")
+            logger.info(f"正在获取股票 {clean_code} 的实时数据 (Sina)...")
             
             # Use fast Sina fetcher
             sina_data = self._get_sina_stock_data(clean_code)
             
             if sina_data:
-                print(f"成功获取股票: {clean_code} - {sina_data['name']}")
+                logger.info(f"成功获取股票: {clean_code} - {sina_data['name']}")
                 self._set_cache(cache_key, sina_data)
                 return sina_data
             else:
@@ -624,7 +627,7 @@ class DataFetcher:
                 return {'error': f'???? {clean_code} ??', 'code': clean_code, 'name': '??'}
 
         except Exception as e:
-            print(f"获取股票 {clean_code} 实时数据失败: {e}")
+            logger.warning(f"获取股票 {clean_code} 实时数据失败: {e}")
             return {'error': str(e), 'code': clean_code, 'name': '未知'}
     
     def _check_limit_up(self, code: str, change_pct: float) -> bool:
@@ -644,7 +647,7 @@ class DataFetcher:
             df = ak.stock_board_industry_cons_em(symbol=sector_name)
             return df['代码'].tolist()
         except Exception as e:
-            print(f"获取板块 {sector_name} 成分股失败: {e}")
+            logger.warning(f"获取板块 {sector_name} 成分股失败: {e}")
             return []
     
     def get_hot_sectors(self) -> List[Dict]:
@@ -742,7 +745,7 @@ class DataFetcher:
                     self._set_cache(cache_key, normalized)
                     return normalized
             except Exception as e:
-                print(f"获取板块资金流失败 {source_name}: {e}")
+                logger.warning(f"获取板块资金流失败 {source_name}: {e}")
 
         return {}
 
@@ -953,10 +956,10 @@ class DataFetcher:
                 return df
             except Exception as e:
                 last_error = e
-                print(f"Failed to fetch history for {clean_code} via {source_name}: {e}")
+                logger.warning(f"Failed to fetch history for {clean_code} via {source_name}: {e}")
 
         if last_error is not None:
-            print(f"Failed to fetch history for {clean_code}: {last_error}")
+            logger.warning(f"Failed to fetch history for {clean_code}: {last_error}")
         return None
 
     def get_concept_stocks(self, code: str) -> List[str]:
@@ -973,7 +976,7 @@ class DataFetcher:
             # 这里简化处理，实际需要解析概念数据
             return []
         except Exception as e:
-            print(f"获取股票 {code} 概念失败: {e}")
+            logger.warning(f"获取股票 {code} 概念失败: {e}")
             return []
 
 

@@ -5,6 +5,11 @@ __pycache__/
 venv/
 env/
 
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
 # Runtime data and generated outputs
 cache/
 outputs/

@@ -12,7 +12,6 @@ from exceptions import register_error_handlers, ValidationError, raise_if_invali
 from constants import APILimitConstants
 import os
 import time
-import traceback
 import hmac
 
 
@@ -130,11 +129,8 @@ except Exception as e:
 @app.route('/api/market-state')
 def market_state():
     """Get current market state for risk control"""
-    try:
-        result = decision_maker.risk_engine.get_market_state()
-        return jsonify({'success': True, 'data': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    result = decision_maker.risk_engine.get_market_state()
+    return jsonify({'success': True, 'data': result})
 
 @app.route('/api/stock/<code>')
 def stock_analysis(code):
@@ -180,78 +176,70 @@ def unified_analyze(code):
 @app.route('/api/hotzt')
 def hot_zt_stocks():
     """Get limit-up stocks sorted by seal amount"""
-    try:
-        df = data_fetcher.get_limit_up_pool()
-        
-        if df is None or len(df) == 0:
-            return jsonify({'success': False, 'error': 'No limit-up stocks found'})
-        
-        # Convert list to dict if needed
-        if isinstance(df, list):
-            stocks_list = df
-        else:
-            stocks_list = df.to_dict('records')
-        
-        # Sort by seal amount descending
-        stocks_list.sort(key=lambda x: x.get('seal_amount', 0), reverse=True)
-        stocks_list = stocks_list[:APILimitConstants.MAX_HOT_STOCKS]
-        
-        # Format
-        stocks = []
-        for row in stocks_list:
-            stocks.append({
-                'code': row['code'],
-                'name': row['name'],
-                'seal_amount': row['seal_amount'],
-                'limit_count': row['limit_count'],
-                'first_limit_time': str(row['first_limit_time']),
-                'sector': row.get('sector', '')
-            })
-        
-        return jsonify({'success': True, 'data': stocks, 'count': len(stocks)})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    df = data_fetcher.get_limit_up_pool()
+
+    if df is None or len(df) == 0:
+        return jsonify({'success': False, 'error': 'No limit-up stocks found'})
+
+    # Convert list to dict if needed
+    if isinstance(df, list):
+        stocks_list = df
+    else:
+        stocks_list = df.to_dict('records')
+
+    # Sort by seal amount descending
+    stocks_list.sort(key=lambda x: x.get('seal_amount', 0), reverse=True)
+    stocks_list = stocks_list[:APILimitConstants.MAX_HOT_STOCKS]
+
+    # Format
+    stocks = []
+    for row in stocks_list:
+        stocks.append({
+            'code': row['code'],
+            'name': row['name'],
+            'seal_amount': row['seal_amount'],
+            'limit_count': row['limit_count'],
+            'first_limit_time': str(row['first_limit_time']),
+            'sector': row.get('sector', '')
+        })
+
+    return jsonify({'success': True, 'data': stocks, 'count': len(stocks)})
 
 @app.route('/api/hot-sectors')
 def hot_sectors():
     """Get sectors with most limit-up stocks"""
-    try:
-        df = data_fetcher.get_limit_up_pool()
-        
-        if df is None or len(df) == 0:
-            return jsonify({'success': False, 'error': 'No limit-up stocks found'})
-        
-        # Convert list to dict if needed
-        if isinstance(df, list):
-            stocks_list = df
-        else:
-            stocks_list = df.to_dict('records')
-        
-        # Group by sector
-        sector_data = {}
-        for stock in stocks_list:
-            sector = stock.get('sector', 'Other')
-            if sector not in sector_data:
-                sector_data[sector] = {
-                    'name': sector,
-                    'count': 0,
-                    'stocks': []
-                }
-            sector_data[sector]['count'] += 1
-            sector_data[sector]['stocks'].append({
-                'code': stock['code'],
-                'name': stock['name']
-            })
-        
-        # Convert to list and sort
-        sectors = list(sector_data.values())
-        sectors.sort(key=lambda x: x['count'], reverse=True)
-        
-        return jsonify({'success': True, 'data': sectors, 'count': len(sectors)})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    df = data_fetcher.get_limit_up_pool()
+
+    if df is None or len(df) == 0:
+        return jsonify({'success': False, 'error': 'No limit-up stocks found'})
+
+    # Convert list to dict if needed
+    if isinstance(df, list):
+        stocks_list = df
+    else:
+        stocks_list = df.to_dict('records')
+
+    # Group by sector
+    sector_data = {}
+    for stock in stocks_list:
+        sector = stock.get('sector', 'Other')
+        if sector not in sector_data:
+            sector_data[sector] = {
+                'name': sector,
+                'count': 0,
+                'stocks': []
+            }
+        sector_data[sector]['count'] += 1
+        sector_data[sector]['stocks'].append({
+            'code': stock['code'],
+            'name': stock['name']
+        })
+
+    # Convert to list and sort
+    sectors = list(sector_data.values())
+    sectors.sort(key=lambda x: x['count'], reverse=True)
+
+    return jsonify({'success': True, 'data': sectors, 'count': len(sectors)})
 
 # zt-pool 响应级缓存：批量决策含筹码质量分析较重，60 秒内直接复用结果
 _ZT_POOL_CACHE = {'data': None, 'at': 0.0}
@@ -264,112 +252,107 @@ def zt_pool():
     Get limit-up pool with decision analysis
     Enhanced: Include chip quality scoring
     """
-    try:
-        refresh = request.args.get('refresh') == '1'
+    refresh = request.args.get('refresh') == '1'
 
-        # 响应缓存命中（refresh=1 跳过）
-        if not refresh:
-            with _ZT_POOL_CACHE_LOCK:
-                cached = _ZT_POOL_CACHE['data']
-                if cached is not None and (time.time() - _ZT_POOL_CACHE['at']) < _ZT_POOL_CACHE_TTL:
-                    return jsonify({**cached, 'cached': True})
-
-        df = data_fetcher.get_limit_up_pool(force_refresh=refresh)
-        
-        if df is None or len(df) == 0:
-            return jsonify({'success': False, 'error': 'No limit-up stocks found'})
-        
-        # Convert list to dict if needed
-        if isinstance(df, list):
-            stocks_list = df
-        else:
-            stocks_list = df.to_dict('records')
-        
-        # 批量决策：全局数据（涨停池/市场状态/板块资金）只获取一次，避免每股重复请求
-        codes = [s['code'] for s in stocks_list]
-        try:
-            batch_results = decision_maker.batch_make_decision(codes)
-        except Exception as e:
-            logger.error(f"批量决策失败，回退单股模式: {e}")
-            batch_results = {}
-
-        results = []
-        for stock in stocks_list:
-            code = stock['code']
-
-            # Make decision (enhanced if available)
-            try:
-                decision_result = batch_results.get(code) or decision_maker.make_decision(code)
-
-                # Extract decision info
-                decision = decision_result.get('decision', 'IGNORE')
-                confidence = decision_result.get('confidence', 0)
-                reason = decision_result.get('reason', '')
-                market_state = decision_result.get('market_state', {})
-                stock_info = decision_result.get('stock_info', {})
-                sector_effect = decision_result.get('sector_effect', {})
-                sector_money = decision_result.get('sector_money', {})
-                chip_quality = decision_result.get('chip_quality', {})
-                arbitrage = decision_result.get('arbitrage', [])
-                
-                # Build response
-                stock_data = {
-                    'code': code,
-                    'name': stock['name'],
-                    'decision': decision,
-                    'confidence': confidence,
-                    'reason': reason,
-                    'risk_warning': decision_result.get('risk_warning', ''),
-                    'seal_amount': stock['seal_amount'],
-                    'limit_count': stock['limit_count'],
-                    'first_limit_time': str(stock['first_limit_time']),
-                    'sector': stock.get('sector', ''),
-                    'turnover_rate': stock.get('turnover_rate', 0),
-                    'market_state': market_state,
-                    'stock_info': stock_info,
-                    'sector_effect': sector_effect,
-                    'sector_money': sector_money,
-                    'chip_quality': chip_quality,  # Enhanced: chip quality
-                    'arbitrage': arbitrage
-                }
-                
-                results.append(stock_data)
-                
-            except Exception as e:
-                logger.error(f"Error analyzing {code}: {e}")
-                # 即使分析失败，仍然保留该股票的基本信息
-                stock_data = {
-                    'code': code,
-                    'name': stock['name'],
-                    'decision': 'N/A',
-                    'confidence': 0,
-                    'reason': f'分析异常: {str(e)[:50]}',
-                    'seal_amount': stock['seal_amount'],
-                    'limit_count': stock['limit_count'],
-                    'first_limit_time': str(stock['first_limit_time']),
-                    'sector': stock.get('sector', ''),
-                    'turnover_rate': stock.get('turnover_rate', 0),
-                    'market_state': {},
-                    'stock_info': {},
-                    'sector_effect': {},
-                    'sector_money': {},
-                    'chip_quality': {},
-                    'arbitrage': []
-                }
-                results.append(stock_data)
-        
-        # Sort by seal amount descending
-        results.sort(key=lambda x: x['seal_amount'], reverse=True)
-
-        payload = {'success': True, 'data': results, 'count': len(results)}
+    # 响应缓存命中（refresh=1 跳过）
+    if not refresh:
         with _ZT_POOL_CACHE_LOCK:
-            _ZT_POOL_CACHE['data'] = payload
-            _ZT_POOL_CACHE['at'] = time.time()
-        return jsonify(payload)
+            cached = _ZT_POOL_CACHE['data']
+            if cached is not None and (time.time() - _ZT_POOL_CACHE['at']) < _ZT_POOL_CACHE_TTL:
+                return jsonify({**cached, 'cached': True})
 
+    df = data_fetcher.get_limit_up_pool(force_refresh=refresh)
+
+    if df is None or len(df) == 0:
+        return jsonify({'success': False, 'error': 'No limit-up stocks found'})
+
+    # Convert list to dict if needed
+    if isinstance(df, list):
+        stocks_list = df
+    else:
+        stocks_list = df.to_dict('records')
+
+    # 批量决策：全局数据（涨停池/市场状态/板块资金）只获取一次，避免每股重复请求
+    codes = [s['code'] for s in stocks_list]
+    try:
+        batch_results = decision_maker.batch_make_decision(codes)
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        logger.error(f"批量决策失败，回退单股模式: {e}")
+        batch_results = {}
+
+    results = []
+    for stock in stocks_list:
+        code = stock['code']
+
+        # Make decision (enhanced if available)
+        try:
+            decision_result = batch_results.get(code) or decision_maker.make_decision(code)
+
+            # Extract decision info
+            decision = decision_result.get('decision', 'IGNORE')
+            confidence = decision_result.get('confidence', 0)
+            reason = decision_result.get('reason', '')
+            market_state = decision_result.get('market_state', {})
+            stock_info = decision_result.get('stock_info', {})
+            sector_effect = decision_result.get('sector_effect', {})
+            sector_money = decision_result.get('sector_money', {})
+            chip_quality = decision_result.get('chip_quality', {})
+            arbitrage = decision_result.get('arbitrage', [])
+
+            # Build response
+            stock_data = {
+                'code': code,
+                'name': stock['name'],
+                'decision': decision,
+                'confidence': confidence,
+                'reason': reason,
+                'risk_warning': decision_result.get('risk_warning', ''),
+                'seal_amount': stock['seal_amount'],
+                'limit_count': stock['limit_count'],
+                'first_limit_time': str(stock['first_limit_time']),
+                'sector': stock.get('sector', ''),
+                'turnover_rate': stock.get('turnover_rate', 0),
+                'market_state': market_state,
+                'stock_info': stock_info,
+                'sector_effect': sector_effect,
+                'sector_money': sector_money,
+                'chip_quality': chip_quality,  # Enhanced: chip quality
+                'arbitrage': arbitrage
+            }
+
+            results.append(stock_data)
+
+        except Exception as e:
+            logger.error(f"Error analyzing {code}: {e}")
+            # 即使分析失败，仍然保留该股票的基本信息
+            stock_data = {
+                'code': code,
+                'name': stock['name'],
+                'decision': 'N/A',
+                'confidence': 0,
+                'reason': f'分析异常: {str(e)[:50]}',
+                'seal_amount': stock['seal_amount'],
+                'limit_count': stock['limit_count'],
+                'first_limit_time': str(stock['first_limit_time']),
+                'sector': stock.get('sector', ''),
+                'turnover_rate': stock.get('turnover_rate', 0),
+                'market_state': {},
+                'stock_info': {},
+                'sector_effect': {},
+                'sector_money': {},
+                'chip_quality': {},
+                'arbitrage': []
+            }
+            results.append(stock_data)
+
+    # Sort by seal amount descending
+    results.sort(key=lambda x: x['seal_amount'], reverse=True)
+
+    payload = {'success': True, 'data': results, 'count': len(results)}
+    with _ZT_POOL_CACHE_LOCK:
+        _ZT_POOL_CACHE['data'] = payload
+        _ZT_POOL_CACHE['at'] = time.time()
+    return jsonify(payload)
 
 # ==========================================
 # API Routes - IronTrader2 (AI-based)
@@ -378,16 +361,11 @@ def zt_pool():
 @app.route('/api/future-predict')
 def future_predict():
     """Get future prediction for stock"""
-    code = request.args.get('code')
-    if not code:
-        return jsonify({'success': False, 'error': 'Stock code required'}), 400
-    
-    try:
-        prediction = quick_predict(code)
-        return jsonify({'success': True, 'data': prediction})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    code = (request.args.get('code') or '').strip()
+    raise_if_invalid_stock_code(code)
+
+    prediction = quick_predict(code)
+    return jsonify({'success': True, 'data': prediction})
 
 @app.route('/api/rag-query')
 def rag_query():
@@ -395,13 +373,9 @@ def rag_query():
     query = request.args.get('query')
     if not query:
         return jsonify({'success': False, 'error': 'Query required'}), 400
-    
-    try:
-        results = rag_engine.query(query)
-        return jsonify({'success': True, 'data': results})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+
+    results = rag_engine.query(query)
+    return jsonify({'success': True, 'data': results})
 
 # ==========================================
 # Low-Buy Analysis Routes (低吸分析系统)
@@ -421,71 +395,53 @@ def _get_low_buy_engine():
 @app.route('/api/lowbuy/analyze', methods=['POST'])
 def lowbuy_analyze():
     """单只股票低吸分析"""
-    try:
-        data = request.get_json() or {}
-        code = data.get('code', '').strip()
-        if not code:
-            code = request.args.get('code', '').strip()
-        if not code:
-            return jsonify({'success': False, 'error': '请提供股票代码'}), 400
-        
-        engine = _get_low_buy_engine()
-        result = engine.analyze(code)
-        return jsonify({'success': True, 'data': result})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    data = request.get_json() or {}
+    code = data.get('code', '').strip()
+    if not code:
+        code = request.args.get('code', '').strip()
+    raise_if_invalid_stock_code(code)
+
+    engine = _get_low_buy_engine()
+    result = engine.analyze(code)
+    return jsonify({'success': True, 'data': result})
 
 @app.route('/api/lowbuy/batch', methods=['POST'])
 def lowbuy_batch():
     """批量低吸分析"""
-    try:
-        data = request.get_json() or {}
-        codes = data.get('codes', [])
-        if not codes:
-            return jsonify({'success': False, 'error': '请提供股票代码列表'}), 400
-        
-        engine = _get_low_buy_engine()
-        results = engine.batch_analyze(codes)
-        return jsonify({'success': True, 'data': results, 'count': len(results)})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    data = request.get_json() or {}
+    codes = data.get('codes', [])
+    if not codes:
+        return jsonify({'success': False, 'error': '请提供股票代码列表'}), 400
+    codes = [str(c).strip() for c in codes]
+    for c in codes:
+        raise_if_invalid_stock_code(c)
+
+    engine = _get_low_buy_engine()
+    results = engine.batch_analyze(codes)
+    return jsonify({'success': True, 'data': results, 'count': len(results)})
 
 @app.route('/api/lowbuy/sentiment')
 def lowbuy_sentiment():
     """当前市场情绪周期"""
-    try:
-        engine = _get_low_buy_engine()
-        result = engine.sentiment_analyzer.analyze()
-        return jsonify({'success': True, 'data': result})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    engine = _get_low_buy_engine()
+    result = engine.sentiment_analyzer.analyze()
+    return jsonify({'success': True, 'data': result})
 
 @app.route('/api/lowbuy/sectors')
 def lowbuy_sectors():
     """所有板块资金流向"""
-    try:
-        engine = _get_low_buy_engine()
-        results = engine.sector_scorer.score_all_sectors()
-        return jsonify({'success': True, 'data': results, 'count': len(results)})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    engine = _get_low_buy_engine()
+    results = engine.sector_scorer.score_all_sectors()
+    return jsonify({'success': True, 'data': results, 'count': len(results)})
 
 @app.route('/api/lowbuy/data-source-health')
 def lowbuy_data_source_health():
     """当前外部数据源健康状态"""
-    try:
-        engine = _get_low_buy_engine()
-        return jsonify({
-            'success': True,
-            'data': engine.fetcher.get_data_source_health()
-        })
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    engine = _get_low_buy_engine()
+    return jsonify({
+        'success': True,
+        'data': engine.fetcher.get_data_source_health()
+    })
 
 @app.route('/api/lowbuy/candidates')
 def lowbuy_candidates():
@@ -497,9 +453,6 @@ def lowbuy_candidates():
         engine = _get_low_buy_engine()
         results = engine.scan_candidates(min_score=min_score)
         return jsonify({'success': True, 'data': results, 'count': len(results)})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         _LOWBUY_CANDIDATES_LOCK.release()
 
@@ -550,7 +503,7 @@ def _run_lowbuy_candidates_job(job_id, min_score):
             finished_at=time.time(),
         )
     except Exception as e:
-        print(traceback.format_exc().encode('utf-8', errors='replace').decode('utf-8', errors='replace'))
+        logger.error("全A低吸扫描任务失败", exc_info=True)
         error_text = _safe_error_text(e)
         _update_scan_job(
             job_id,
@@ -594,38 +547,33 @@ def search_stocks():
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({'success': False, 'error': 'Query required'}), 400
-    
-    try:
-        engine = _get_low_buy_engine()
-        stock_list = engine.fetcher._get_cache("stock_list_all_a")
-        if not stock_list:
-            import akshare as ak
-            df_info = ak.stock_info_a_code_name()
-            if df_info is not None and not df_info.empty:
-                stock_list = df_info.to_dict('records')
-                engine.fetcher._set_cache("stock_list_all_a", stock_list)
-        
-        results = []
-        if stock_list:
-            count = 0
-            for item in stock_list:
-                code = str(item.get('code', ''))
-                name = str(item.get('name', ''))
-                if query in code or query in name:
-                    results.append({
-                        'code': code,
-                        'name': name,
-                        'market': 'SH' if code.startswith(('6', '9')) else 'SZ'
-                    })
-                    count += 1
-                    if count >= APILimitConstants.MAX_SEARCH_RESULTS:
-                        break
-        
-        return jsonify({'success': True, 'data': results})
 
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+    engine = _get_low_buy_engine()
+    stock_list = engine.fetcher._get_cache("stock_list_all_a")
+    if not stock_list:
+        import akshare as ak
+        df_info = ak.stock_info_a_code_name()
+        if df_info is not None and not df_info.empty:
+            stock_list = df_info.to_dict('records')
+            engine.fetcher._set_cache("stock_list_all_a", stock_list)
+
+    results = []
+    if stock_list:
+        count = 0
+        for item in stock_list:
+            code = str(item.get('code', ''))
+            name = str(item.get('name', ''))
+            if query in code or query in name:
+                results.append({
+                    'code': code,
+                    'name': name,
+                    'market': 'SH' if code.startswith(('6', '9')) else 'SZ'
+                })
+                count += 1
+                if count >= APILimitConstants.MAX_SEARCH_RESULTS:
+                    break
+
+    return jsonify({'success': True, 'data': results})
 
 # ==========================================
 # Counter-Trend Hero Routes (逆势英雄)
@@ -659,9 +607,6 @@ def hero_scan():
             lookback_days=lookback,
         )
         return jsonify(result)
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         _HERO_SCAN_LOCK.release()
 
@@ -689,7 +634,7 @@ def _run_hero_scan_job(job_id: str, min_gain: float, max_turnover: float, lookba
             finished_at=time.time(),
         )
     except Exception as e:
-        traceback.print_exc()
+        logger.error("逆势英雄扫描任务失败", exc_info=True)
         _update_scan_job(
             job_id,
             status='failed',

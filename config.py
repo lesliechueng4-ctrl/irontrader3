@@ -57,6 +57,91 @@ class ChipQualityConfig:
             'shadow_threshold': cls.SHADOW_THRESHOLD,
         }
 
+
+class ChipQualityParams:
+    """筹码质量策略 v2.0 详细参数（原 config_chip_quality.py 合并至此）
+
+    经过实战优化的风控/评分参数。集中存放以便统一调整。
+    """
+
+    # 风控过滤参数
+    RISK_FILTER = {
+        'n_lookback': 5,              # 考察期天数
+        'max_amplitude': 8.0,         # 最大日均振幅(%)
+        'shadow_threshold': 3.0,      # 影线阈值(%)
+        'min_volume_ratio': 2.0,      # 最小量比
+        'volume_burst_ratio': 5.0,    # 量能爆发倍数（天量涨停判定）
+        'high_pos_limit_count': 5,    # 高位加速连板数阈值
+        'high_pos_amplitude': 15.0,   # 高位加速振幅阈值(%)
+    }
+
+    # 换手率参数（已优化）
+    TURNOVER_PARAMS = {
+        'min': 5.0,       # 良性换手下限(%)
+        'max': 25.0,      # 良性换手上限(%)
+        'high': 40.0,     # 过度换手阈值(%)
+    }
+
+    # 评分参数（基于实战优化 v2.0）
+    SCORING = {
+        # 连板筹码质量
+        'yizi_penalty': -10,          # 一字板扣10分（筹码断层）
+        'good_turnover_bonus': 10,    # 良性换手加10分
+        'high_turnover_penalty': -5,  # 过度换手扣5分
+        # 弱转强确认
+        'weak_to_strong_bonus': 20,   # 烂板分歧+高开缩量封板 +20分
+        # 封单强度
+        'seal_10yi': 5,               # 封单≥10亿  +5分
+        'seal_5yi': 3,                # 封单≥5亿   +3分
+        'seal_2yi': 1,                # 封单≥2亿   +1分
+        # 首封时间质量
+        'time_early_seal': 5,         # 09:25~09:45 +5分（早盘秒封）
+        'time_morning_seal': 3,       # 09:45~10:00 +3分（早盘封板）
+        'time_mid_seal': 1,           # 10:00~13:00 +1分（盘中封板）
+        'time_late_penalty': -3,      # 14:30以后   -3分（尾盘封板）
+        # 板块联动
+        'sector_strong': 3,           # 板块≥5只涨停 +3分
+        'sector_moderate': 1,         # 板块≥3只涨停 +1分
+        'limit_count_gte3': 3,        # 3连板以上     +3分
+        'limit_count_eq2': 2,         # 2连板         +2分
+        'limit_count_eq1': 1,         # 首板           +1分
+    }
+
+    # 推荐评级阈值（v2.0 调整）
+    RATING_THRESHOLDS = {
+        'strong_buy': 25,             # ≥25分：强烈推荐
+        'buy': 15,                    # ≥15分：推荐
+        'cautious': 8,                # ≥8分：谨慎参与
+        'watch': 0,                   # >0分：观望
+    }
+
+    # 20cm板涨停阈值
+    LIMIT_UP_THRESHOLDS = {
+        'normal': 9.5,                # 主板(60/00) 涨停阈值
+        'gem': 19.5,                  # 创业板(300/301) 涨停阈值
+        'star': 19.5,                 # 科创板(688) 涨停阈值
+        'bse': 29.5,                  # 北交所(8/4) 涨停阈值
+    }
+
+    # 风控参数与 data_fetcher 字段的对应关系
+    DATA_FETCHER_FIELDS = {
+        '涨停股池': {
+            'code': '代码', 'name': '名称', 'price': '最新价',
+            'change_pct': '涨跌幅', 'seal_amount': '封板资金',
+            'first_limit_time': '首次封板时间', 'limit_count': '连板数',
+            'turnover_rate': '换手率', 'sector': '所属行业',
+        },
+        '个股历史': {
+            'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
+            'close': 'close', 'volume': 'volume', 'turnover': 'turnover',
+            'amount': 'amount',
+        },
+        '指数数据': {
+            'current': '当前价', 'ma5': 'MA5', 'change_pct': '涨跌幅',
+            'volume': '成交量', 'amount': '成交额',
+        },
+    }
+
 # ==========================================
 # 数据源配置
 # ==========================================
@@ -168,6 +253,7 @@ __all__ = [
     'LOG_DIR',
     'FlaskConfig',
     'ChipQualityConfig',
+    'ChipQualityParams',
     'DataSourceConfig',
     'ScannerConfig',
     'APIConfig',

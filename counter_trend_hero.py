@@ -23,6 +23,9 @@ import re
 import requests
 import time
 
+from logger_config import get_logger
+logger = get_logger(__name__)
+
 
 class CounterTrendHeroScanner:
     """逆势英雄扫描器"""
@@ -46,15 +49,15 @@ class CounterTrendHeroScanner:
             # 检查缓存年龄
             cache_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
             if cache_age > timedelta(minutes=max_age_minutes):
-                print(f"   [INFO] 缓存已过期（{int(cache_age.total_seconds() / 60)} 分钟前）")
+                logger.info(f"   [INFO] 缓存已过期（{int(cache_age.total_seconds() / 60)} 分钟前）")
                 return None
 
             with open(cache_file, 'rb') as f:
                 data = pickle.load(f)
-                print(f"   [OK] 从缓存加载数据（{int(cache_age.total_seconds() / 60)} 分钟前）")
+                logger.info(f"   [OK] 从缓存加载数据（{int(cache_age.total_seconds() / 60)} 分钟前）")
                 return data
         except Exception as e:
-            print(f"   [WARN] 缓存加载失败: {e}")
+            logger.warning(f"   [WARN] 缓存加载失败: {e}")
             return None
 
     def _save_to_cache(self, cache_key: str, data: pd.DataFrame):
@@ -63,9 +66,9 @@ class CounterTrendHeroScanner:
             cache_file = self._get_cache_path(cache_key)
             with open(cache_file, 'wb') as f:
                 pickle.dump(data, f)
-            print(f"   [OK] 数据已缓存")
+            logger.info(f"   [OK] 数据已缓存")
         except Exception as e:
-            print(f"   [WARN] 缓存保存失败: {e}")
+            logger.warning(f"   [WARN] 缓存保存失败: {e}")
 
     def _fetch_prior_metrics(
         self, codes: List[str], lookback_days: int, current_volume_map: Dict[str, float], max_workers: int = 10
@@ -308,10 +311,10 @@ class CounterTrendHeroScanner:
         """
         import akshare as ak
 
-        print("=== 逆势英雄扫描 ===")
+        logger.info("=== 逆势英雄扫描 ===")
 
         # Step 1: 判断市场环境
-        print("[1/4] 判断市场环境...")
+        logger.info("[1/4] 判断市场环境...")
         sh_change = sz_change = 0
         market_condition = '未知'
 
@@ -324,17 +327,17 @@ class CounterTrendHeroScanner:
 
             if avg_change <= -2.0:
                 market_condition = '暴跌'
-                print(f"   [OK] 市场暴跌（沪指 {sh_change:.2f}%，深成指 {sz_change:.2f}%）")
+                logger.info(f"   [OK] 市场暴跌（沪指 {sh_change:.2f}%，深成指 {sz_change:.2f}%）")
             elif avg_change <= -1.0:
                 market_condition = '调整'
-                print(f"   [WARN] 市场调整（沪指 {sh_change:.2f}%，深成指 {sz_change:.2f}%）")
+                logger.info(f"   [WARN] 市场调整（沪指 {sh_change:.2f}%，深成指 {sz_change:.2f}%）")
             else:
                 market_condition = '非暴跌'
-                print(f"   [INFO] 非暴跌日（沪指 {sh_change:.2f}%，深成指 {sz_change:.2f}%）")
-                print("   提示：逆势英雄策略更适合暴跌日使用")
+                logger.info(f"   [INFO] 非暴跌日（沪指 {sh_change:.2f}%，深成指 {sz_change:.2f}%）")
+                logger.info("   提示：逆势英雄策略更适合暴跌日使用")
 
         except Exception as e:
-            print(f"   [WARN] 新浪指数获取失败: {e}")
+            logger.warning(f"   [WARN] 新浪指数获取失败: {e}")
             try:
                 # 使用 akshare 作为指数兜底
                 df_index = ak.stock_zh_index_spot_em()
@@ -346,11 +349,11 @@ class CounterTrendHeroScanner:
                 sh_change = float(sh_data['涨跌幅'].values[0]) if not sh_data.empty else 0
                 sz_change = float(sz_data['涨跌幅'].values[0]) if not sz_data.empty else 0
             except Exception as index_error:
-                print(f"   [WARN] 获取指数失败: {index_error}")
-                print("   [INFO] 继续扫描（无市场环境判断）...")
+                logger.warning(f"   [WARN] 获取指数失败: {index_error}")
+                logger.info("   [INFO] 继续扫描（无市场环境判断）...")
 
         # Step 2: 获取全市场行情
-        print("[2/4] 获取全市场行情...")
+        logger.info("[2/4] 获取全市场行情...")
         df_spot = None
         error_msg = ""
 
@@ -358,36 +361,36 @@ class CounterTrendHeroScanner:
 
         # 方法1：尝试使用新浪数据（批量获取全市场行情）
         try:
-            print("   尝试从新浪批量获取全A实时行情...")
+            logger.info("   尝试从新浪批量获取全A实时行情...")
             df_spot = self._fetch_sina_market_spot()
             if df_spot is None or len(df_spot) < 100:
                 count = 0 if df_spot is None else len(df_spot)
                 raise ValueError(f"新浪接口返回数据不足（仅 {count} 只）")
 
-            print(f"   [OK] 获取 {len(df_spot)} 只股票实时行情（新浪分页数据）")
+            logger.info(f"   [OK] 获取 {len(df_spot)} 只股票实时行情（新浪分页数据）")
             self._save_to_cache('market_spot', df_spot)
 
         except Exception as e:
-            print(f"   [WARN] 新浪接口失败: {e}")
+            logger.warning(f"   [WARN] 新浪接口失败: {e}")
             import traceback
             traceback.print_exc()
 
         # 方法2：如果新浪失败，尝试 akshare
         if df_spot is None or len(df_spot) == 0:
             try:
-                print("   尝试从 akshare 获取...")
+                logger.info("   尝试从 akshare 获取...")
                 df_spot = ak.stock_zh_a_spot_em()
                 if df_spot is None or len(df_spot) == 0:
                     raise ValueError("获取的行情数据为空")
-                print(f"   [OK] 获取 {len(df_spot)} 只股票行情（akshare）")
+                logger.info(f"   [OK] 获取 {len(df_spot)} 只股票行情（akshare）")
                 self._save_to_cache('market_spot', df_spot)
             except Exception as e:
                 error_msg = str(e)
-                print(f"   [ERROR] akshare 获取失败: {error_msg}")
+                logger.warning(f"   [ERROR] akshare 获取失败: {error_msg}")
 
         # 方法3：如果都失败，使用缓存
         if df_spot is None or len(df_spot) == 0:
-            print("   [INFO] 尝试使用缓存数据...")
+            logger.info("   [INFO] 尝试使用缓存数据...")
             df_spot = self._load_from_cache('market_spot', max_age_minutes=480)
 
         # 如果还是没有数据，返回错误
@@ -405,7 +408,7 @@ class CounterTrendHeroScanner:
             }
 
         # Step 3: 初筛——该跌不跌
-        print(f"[3/4] 筛选逆势股（涨幅 > {min_gain_pct}%）...")
+        logger.info(f"[3/4] 筛选逆势股（涨幅 > {min_gain_pct}%）...")
         filtered = df_spot[
             (df_spot['涨跌幅'] > min_gain_pct) &                  # 逆势上涨
             (df_spot['换手率'] < max_turnover) &                  # 剔除天量换手
@@ -416,7 +419,7 @@ class CounterTrendHeroScanner:
             (~df_spot['名称'].str.match(r'^[NC]', na=False))      # 排除新股(N)和次新上市初期(C)
         ]
 
-        print(f"   [OK] 初筛通过: {len(filtered)} 只")
+        logger.info(f"   [OK] 初筛通过: {len(filtered)} 只")
 
         if len(filtered) == 0:
             return {
@@ -429,7 +432,7 @@ class CounterTrendHeroScanner:
             }
 
         # Step 4: 精细评分
-        print(f"[4/4] 精细评分（剔除补涨、评估强度）...")
+        logger.info(f"[4/4] 精细评分（剔除补涨、评估强度）...")
 
         # 涨停池只取一次（旧版在循环内每只股票都拉一次）
         zt_seal_map = {}
@@ -537,9 +540,9 @@ class CounterTrendHeroScanner:
         # 按评分排序
         heroes.sort(key=lambda x: x['score'], reverse=True)
 
-        print(f"   [OK] 发现 {len(heroes)} 只逆势英雄")
-        print(f"      涨停英雄: {sum(1 for h in heroes if h['hero_level'] == '涨停英雄')} 只")
-        print(f"      大涨英雄: {sum(1 for h in heroes if h['hero_level'] == '大涨英雄')} 只")
+        logger.info(f"   [OK] 发现 {len(heroes)} 只逆势英雄")
+        logger.info(f"      涨停英雄: {sum(1 for h in heroes if h['hero_level'] == '涨停英雄')} 只")
+        logger.info(f"      大涨英雄: {sum(1 for h in heroes if h['hero_level'] == '大涨英雄')} 只")
 
         return {
             'success': True,
