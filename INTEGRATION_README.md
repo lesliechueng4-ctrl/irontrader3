@@ -50,7 +50,7 @@
 
 ---
 
-### 3. `example_enhanced.py` - 使用示例
+### 3. `scripts/examples/example_enhanced.py` - 使用示例
 
 **示例：**
 1. 单只股票决策
@@ -182,10 +182,10 @@ for stock in candidates[:5]:
 
 ```bash
 # 进入项目目录
-cd C:\Users\k1_adm\Desktop\code\code\irontrader3
+cd C:\Users\Admin\Documents\irontrader3
 
 # 运行增强版示例
-python example_enhanced.py
+python scripts/examples/example_enhanced.py
 ```
 
 ---
@@ -290,7 +290,7 @@ python decision_maker_enhanced.py
 
 ```bash
 # 运行完整示例
-python example_enhanced.py
+python scripts/examples/example_enhanced.py
 ```
 
 ---

@@ -42,7 +42,16 @@ class CacheManager:
             'limit_up_pool': 30,            # 涨停池：30秒
             'hot_sectors': 30,              # 热门板块：30秒
             
-            # 历史数据：长期缓存
+            # 长期静态/历史数据
+            'stock_list': 86400 * 7,        # A股股票静态列表：7天
+            'stock_sector': 86400 * 7,      # 个股所属行业：7天（行业几乎不变）
+            'lhb_detail': 86400,            # 龙虎榜数据：1天
+            'margin_sse': 86400,            # 上交所融资融券：1天
+            'margin_szse': 86400,           # 深交所融资融券：1天
+            'fundamental_score': 86400,     # 基本面数据评分：1天
+            'stock_fund_flow_history': 86400, # 个股资金流历史：当天有效
+            'stock_fund_flow_sina': 86400,  # 新浪个股资金流历史：当天有效
+            'stock_history': 3600,          # 个股历史K线：1小时
             'index_history': 3600,          # 历史数据：1小时
             
             # 默认缓存时间

@@ -1,21 +1,52 @@
 """
 IronTrader Chip Quality Strategy
-筹码质量风控+打分模块 - 游资实战策略
+筹码质量风控+打分模块 - 游资实战策略 v2.0
+
+优化内容：
+1. 支持20cm板（创业板/科创板涨停阈值19.5%）
+2. 新增风控：量能结构异常、高位加速见顶
+3. 新增打分：封单强度、首封时间、板块联动
+4. 修复字段名Bug
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from data_fetcher import DataFetcher
+
+
+def _get_limit_up_threshold(code: str) -> float:
+    """根据股票代码判断涨停阈值"""
+    code_str = str(code).strip()
+    # 创业板(300/301) 和 科创板(688) 涨停20%
+    if code_str.startswith(('300', '301', '688')):
+        return 19.5
+    # 北交所(8/4开头) 涨停30%
+    if code_str.startswith(('8', '4')) and len(code_str) == 6:
+        return 29.5
+    # 其余主板 涨停10%
+    return 9.5
+
+
+def _get_board_type(code: str) -> str:
+    """根据股票代码返回板块类型标签"""
+    code_str = str(code).split('.')[0].strip()
+    if code_str.startswith(('300', '301')):
+        return 'gem'
+    if code_str.startswith(('688', '689')):
+        return 'star'
+    if code_str.startswith(('4', '8', '92')) and len(code_str) == 6:
+        return 'bse'
+    return 'main'
 
 
 class ChipQualityStrategy:
     """
-    筹码质量策略 - 游资风控+打分系统
+    筹码质量策略 - 游资风控+打分系统 v2.0
     
     功能：
-    1. 风控过滤：剔除"筹码脏了"和"一字板断层"的标的
-    2. 打分系统：根据筹码结构健康度给标打分
+    1. 风控过滤：剔除"筹码脏了"、"一字板断层"、"量能异常"、"高位见顶"
+    2. 打分系统：筹码质量+弱转强+封单强度+首封时间+板块联动
     """
     
     def __init__(self, data_fetcher: DataFetcher, config: Optional[Dict] = None):
@@ -31,12 +62,16 @@ class ChipQualityStrategy:
         # 默认配置
         default_config = {
             'n_lookback': 5,           # 考察期天数
-            'turnover_min': 8.0,       # 良性换手下限(%)
-            'turnover_max': 20.0,      # 良性换手上限(%)
-            'turnover_high': 35.0,     # 过度换手阈值(%)
-            'max_amplitude': 8.0,       # 最大日均振幅(%)
-            'min_volume_ratio': 2.0,    # 最小量比
-            'shadow_threshold': 3.0,     # 影线阈值(%)
+            'turnover_min': 5.0,       # 良性换手下限(%)
+            'turnover_max': 25.0,      # 良性换手上限(%)
+            'turnover_high': 40.0,     # 过度换手阈值(%)
+            'max_amplitude': 8.0,      # 最大日均振幅(%)
+            'min_volume_ratio': 2.0,   # 最小量比
+            'shadow_threshold': 3.0,   # 影线阈值(%)
+            # 新增参数
+            'volume_burst_ratio': 5.0, # 量能爆发倍数（相对5日均量）
+            'high_pos_limit_count': 5, # 高位加速连板阈值
+            'high_pos_amplitude': 15.0, # 高位加速振幅阈值(%)
         }
         
         # 合并配置
@@ -50,13 +85,14 @@ class ChipQualityStrategy:
         self.min_volume_ratio = self.config['min_volume_ratio']
         self.shadow_threshold = self.config['shadow_threshold'] / 100.0
     
-    def analyze_stock(self, code: str, days: int = 30) -> Dict:
+    def analyze_stock(self, code: str, days: int = 30, pool_info: Dict = None) -> Dict:
         """
         分析单只股票的筹码质量
         
         Args:
             code: 股票代码
             days: 获取的历史数据天数
+            pool_info: 涨停池中的额外信息（封单金额、首封时间、板块等）
         
         Returns:
             {
@@ -75,14 +111,14 @@ class ChipQualityStrategy:
         if df is None or len(df) < 10:
             return self._error_result(code, "数据不足或获取失败")
         
-        # 添加基础指标
-        df = self._add_indicators(df)
+        # 添加基础指标（根据股票代码自适应涨停阈值）
+        df = self._add_indicators(df, code)
         
         # 应用风控过滤
-        filter_result = self._apply_risk_filters(df)
+        filter_result = self._apply_risk_filters(df, code)
         
-        # 计算得分
-        score_result = self._calculate_scores(df)
+        # 计算得分（传入涨停池信息用于封单/时间打分）
+        score_result = self._calculate_scores(df, code, pool_info)
         
         # 生成推荐
         recommendation = self._generate_recommendation(filter_result, score_result)
@@ -141,17 +177,22 @@ class ChipQualityStrategy:
             print(f"获取{code}数据失败: {e}")
             return None
     
-    def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_indicators(self, df: pd.DataFrame, code: str = '') -> pd.DataFrame:
         """
-        添加技术指标
+        添加技术指标（支持20cm板）
         
         Args:
             df: 原始OHLCV数据
+            code: 股票代码（用于判断涨停阈值）
         
         Returns:
             添加了指标的DataFrame
         """
         df = df.copy()
+        
+        # 根据股票代码确定涨停阈值
+        limit_threshold = _get_limit_up_threshold(code)
+        limit_ratio = 1 + limit_threshold / 100.0  # 如 1.1 或 1.2
         
         # 前收盘价
         df['Prev_Close'] = df['Close'].shift(1).fillna(df['Open'])
@@ -165,10 +206,10 @@ class ChipQualityStrategy:
         # 计算涨跌幅
         df['Change_Pct'] = (df['Close'] - df['Prev_Close']) / df['Prev_Close'] * 100
         
-        # 是否涨停（涨幅>9.5%）
-        df['Is_Limit_Up'] = df['Change_Pct'] > 9.5
+        # 是否涨停（根据代码自适应阈值）
+        df['Is_Limit_Up'] = df['Change_Pct'] > limit_threshold
         
-        # 是否一字板
+        # 是否一字板（开盘=最高=最低=收盘 或 开盘=涨停价且未开板）
         df['Is_YiZi'] = (df['High'] == df['Low'])
         
         # 计算连板高度
@@ -181,30 +222,39 @@ class ChipQualityStrategy:
                 consecutive = 0
             df.iloc[i, df.columns.get_loc('Limit_Up_Count')] = consecutive
         
+        # 5日均量
+        df['Vol_MA5'] = df['Volume'].rolling(5).mean()
+        
         # 计算换手率（如果没有提供，用相对换手）
         if 'Turnover' not in df.columns:
-            df['Vol_MA5'] = df['Volume'].rolling(5).mean()
             df['Turnover'] = df['Volume'] / df['Vol_MA5']
         
         # 量比
         df['Volume_Ratio'] = df['Volume'] / df['Vol_MA5']
         
-        # 涨停价（如果是10%涨停板）
-        df['Limit_Up_Price'] = df['Prev_Close'] * 1.1
+        # 涨停价
+        df['Limit_Up_Price'] = df['Prev_Close'] * limit_ratio
+        
+        # 保存涨停阈值供后续使用
+        df.attrs['limit_threshold'] = limit_threshold
         
         return df
     
-    def _apply_risk_filters(self, df: pd.DataFrame) -> Dict:
+    # ===================================================
+    # 风控过滤模块
+    # ===================================================
+    
+    def _apply_risk_filters(self, df: pd.DataFrame, code: str = '') -> Dict:
         """
-        应用风控过滤
+        应用风控过滤（5层过滤）
         
         Returns:
             {
                 'pass_all': bool,
-                'filter1_chip_dirty': bool,
-                'filter1_reason': str,
-                'filter2_yizi_burst': bool,
-                'filter2_reason': str
+                'filter1_chip_dirty_pass': bool,  'filter1_reason': str,
+                'filter2_yizi_burst_pass': bool,   'filter2_reason': str,
+                'filter3_volume_burst_pass': bool,  'filter3_reason': str,
+                'filter4_high_accel_pass': bool,    'filter4_reason': str,
             }
         """
         n = self.config['n_lookback']
@@ -216,12 +266,24 @@ class ChipQualityStrategy:
         # 过滤规则2：一字板断层
         filter2_pass, filter2_reason = self._filter_yizi_burst(df, current_idx)
         
+        # 过滤规则3：量能结构异常（新增）
+        filter3_pass, filter3_reason = self._filter_volume_burst(df, current_idx)
+        
+        # 过滤规则4：高位加速见顶（新增）
+        filter4_pass, filter4_reason = self._filter_high_accel_top(df, current_idx)
+        
+        pass_all = filter1_pass and filter2_pass and filter3_pass and filter4_pass
+        
         return {
-            'pass_all': filter1_pass and filter2_pass,
+            'pass_all': pass_all,
             'filter1_chip_dirty_pass': filter1_pass,
             'filter1_reason': filter1_reason,
             'filter2_yizi_burst_pass': filter2_pass,
-            'filter2_reason': filter2_reason
+            'filter2_reason': filter2_reason,
+            'filter3_volume_burst_pass': filter3_pass,
+            'filter3_reason': filter3_reason,
+            'filter4_high_accel_pass': filter4_pass,
+            'filter4_reason': filter4_reason,
         }
     
     def _filter_chip_dirty(self, df: pd.DataFrame, n: int, current_idx: int) -> tuple:
@@ -298,33 +360,123 @@ class ChipQualityStrategy:
         
         return True, "无一字板断层风险"
     
-    def _calculate_scores(self, df: pd.DataFrame) -> Dict:
+    def _filter_volume_burst(self, df: pd.DataFrame, current_idx: int) -> tuple:
         """
-        计算打分项
+        过滤规则3：量能结构异常（天量涨停 → 次日大概率高开低走）
+        
+        条件：涨停日成交量 > 5日均量的5倍 且 换手率 > 40%
+        
+        Returns:
+            (pass: bool, reason: str)
+        """
+        if current_idx < 5:
+            return True, "数据不足，跳过过滤"
+        
+        today = df.iloc[current_idx]
+        burst_ratio = self.config['volume_burst_ratio']
+        
+        # 仅对涨停日检测
+        if not today['Is_Limit_Up']:
+            return True, "今日未涨停，不适用"
+        
+        vol_ma5 = today.get('Vol_MA5', 0)
+        if vol_ma5 <= 0:
+            return True, "均量数据异常，跳过"
+        
+        volume_ratio = today['Volume'] / vol_ma5
+        turnover = today.get('Turnover', 0)
+        
+        # 天量涨停：量比>5倍 且 换手>40%
+        if volume_ratio > burst_ratio and turnover > self.turnover_high:
+            return False, f"量能结构异常：涨停日量比{volume_ratio:.1f}倍，换手{turnover*100:.1f}%（天量涨停，次日大概率高开低走）"
+        
+        return True, "量能结构正常"
+    
+    def _filter_high_accel_top(self, df: pd.DataFrame, current_idx: int) -> tuple:
+        """
+        过滤规则4：高位加速见顶
+        
+        条件：连板 ≥5 且 今日振幅 > 15%（高位放巨量大振幅 = 筹码松动）
+        
+        Returns:
+            (pass: bool, reason: str)
+        """
+        if current_idx < 1:
+            return True, "数据不足，跳过过滤"
+        
+        today = df.iloc[current_idx]
+        limit_count = int(today.get('Limit_Up_Count', 0))
+        amplitude = today.get('Amplitude', 0)
+        high_limit = self.config['high_pos_limit_count']
+        high_amp = self.config['high_pos_amplitude'] / 100.0
+        
+        if limit_count >= high_limit and amplitude > high_amp:
+            return False, f"高位加速见顶：{limit_count}连板且振幅{amplitude*100:.1f}%（分歧严重，筹码松动）"
+        
+        return True, "无高位见顶风险"
+    
+    # ===================================================
+    # 打分模块
+    # ===================================================
+    
+    def _calculate_scores(self, df: pd.DataFrame, code: str = '', pool_info: Dict = None) -> Dict:
+        """
+        计算打分项（7维度）
         
         Returns:
             {
                 'total': int,
-                'score1_limitup_quality': int,
-                'score1_reason': str,
-                'score2_weak_to_strong': int,
-                'score2_reason': str
+                'score1_limitup_quality': int, 'score1_reason': str,
+                'score2_weak_to_strong': int,  'score2_reason': str,
+                'score3_seal_strength': int,   'score3_reason': str,
+                'score4_first_seal_time': int, 'score4_reason': str,
+                'score5_sector_link': int,     'score5_reason': str,
+                'score6_market_sentiment': int, 'score6_reason': str,
+                'score7_board_style_fit': int, 'score7_reason': str,
             }
         """
         current_idx = len(df) - 1
+        pool_info = pool_info or {}
         
         # 打分项1：连板筹码质量
         score1, reason1 = self._score_limitup_quality(df, current_idx)
         
-        # 打分项2：多空情绪演变
+        # 打分项2：多空情绪演变（弱转强）
         score2, reason2 = self._score_weak_to_strong(df, current_idx)
         
+        # 打分项3：封单强度（新增）
+        score3, reason3 = self._score_seal_strength(pool_info)
+        
+        # 打分项4：首封时间质量（新增）
+        score4, reason4 = self._score_first_seal_time(pool_info)
+        
+        # 打分项5：板块联动强度（新增）
+        score5, reason5 = self._score_sector_linkage(pool_info)
+
+        # 打分项6：市场情绪温度（新增）
+        score6, reason6 = self._score_market_sentiment(pool_info)
+
+        # 打分项7：板块风格匹配（新增）
+        score7, reason7 = self._score_board_style_fit(code, pool_info)
+        
+        total = score1 + score2 + score3 + score4 + score5 + score6 + score7
+        
         return {
-            'total': score1 + score2,
+            'total': total,
             'score1_limitup_quality': score1,
             'score1_reason': reason1,
             'score2_weak_to_strong': score2,
-            'score2_reason': reason2
+            'score2_reason': reason2,
+            'score3_seal_strength': score3,
+            'score3_reason': reason3,
+            'score4_first_seal_time': score4,
+            'score4_reason': reason4,
+            'score5_sector_link': score5,
+            'score5_reason': reason5,
+            'score6_market_sentiment': score6,
+            'score6_reason': reason6,
+            'score7_board_style_fit': score7,
+            'score7_reason': reason7,
         }
     
     def _score_limitup_quality(self, df: pd.DataFrame, current_idx: int) -> tuple:
@@ -406,6 +558,215 @@ class ChipQualityStrategy:
         
         return score, reason
     
+    def _score_seal_strength(self, pool_info: Dict) -> tuple:
+        """
+        打分项3：封单强度
+        
+        封单金额评分：
+        - ≥10亿   → +5分（超级封单）
+        - ≥5亿    → +3分（强力封单）
+        - ≥2亿    → +1分（一般封单）
+        - <2亿    → 0分
+        
+        Returns:
+            (score: int, reason: str)
+        """
+        seal_amount = pool_info.get('seal_amount', 0)
+        
+        if not seal_amount:
+            return 0, "无封单数据"
+        
+        seal_yi = seal_amount / 1_0000_0000  # 转换为亿
+        
+        if seal_yi >= 10:
+            return 5, f"超级封单{seal_yi:.1f}亿，加5分"
+        elif seal_yi >= 5:
+            return 3, f"强力封单{seal_yi:.1f}亿，加3分"
+        elif seal_yi >= 2:
+            return 1, f"一般封单{seal_yi:.1f}亿，加1分"
+        else:
+            return 0, f"封单偏弱{seal_yi:.2f}亿"
+    
+    def _score_first_seal_time(self, pool_info: Dict) -> tuple:
+        """
+        打分项4：首封时间质量
+        
+        - 09:25~09:45（集合竞价/早盘秒封） → +5分
+        - 09:45~10:00（早盘封板）           → +3分
+        - 10:00~13:00（盘中封板）           → +1分
+        - 13:00~14:30（午盘封板）           → 0分
+        - 14:30以后  （尾盘封板）           → -3分
+        
+        Returns:
+            (score: int, reason: str)
+        """
+        first_time_str = str(pool_info.get('first_limit_time', ''))
+        
+        if not first_time_str or first_time_str == 'nan' or first_time_str == '':
+            return 0, "无首封时间数据"
+        
+        try:
+            # 解析时间字符串（支持 HH:MM:SS 或 HHMMSS 格式）
+            time_str = first_time_str.strip().replace(':', '')
+            if len(time_str) >= 4:
+                hour = int(time_str[:2])
+                minute = int(time_str[2:4])
+                time_val = hour * 60 + minute  # 转换为分钟
+            else:
+                return 0, f"时间格式异常: {first_time_str}"
+            
+            if time_val <= 9 * 60 + 45:  # 09:45前
+                return 5, f"早盘秒封({first_time_str})，加5分"
+            elif time_val <= 10 * 60:  # 10:00前
+                return 3, f"早盘封板({first_time_str})，加3分"
+            elif time_val <= 13 * 60:  # 13:00前
+                return 1, f"盘中封板({first_time_str})，加1分"
+            elif time_val <= 14 * 60 + 30:  # 14:30前
+                return 0, f"午盘封板({first_time_str})，不加分"
+            else:  # 14:30后
+                return -3, f"尾盘封板({first_time_str})，扣3分（封单不稳）"
+                
+        except (ValueError, IndexError):
+            return 0, f"时间解析失败: {first_time_str}"
+    
+    def _score_sector_linkage(self, pool_info: Dict) -> tuple:
+        """
+        打分项5：板块联动强度
+        
+        同板块涨停数：
+        - ≥5只  → +3分（强板块效应）
+        - ≥3只  → +1分（有板块效应）
+        - <3只  → 0分
+        
+        连板数加分：
+        - ≥3连板 → +3分
+        - 2连板  → +2分
+        - 首板   → +1分
+        
+        Returns:
+            (score: int, reason: str)
+        """
+        score = 0
+        reasons = []
+        
+        # 板块内涨停数
+        sector_zt_count = pool_info.get('sector_zt_count', 0)
+        if sector_zt_count >= 5:
+            score += 3
+            reasons.append(f"板块{sector_zt_count}只涨停，加3分")
+        elif sector_zt_count >= 3:
+            score += 1
+            reasons.append(f"板块{sector_zt_count}只涨停，加1分")
+        
+        # 连板数
+        limit_count = pool_info.get('limit_count', 0)
+        if limit_count >= 3:
+            score += 3
+            reasons.append(f"{limit_count}连板，加3分")
+        elif limit_count == 2:
+            score += 2
+            reasons.append("2连板，加2分")
+        elif limit_count == 1:
+            score += 1
+            reasons.append("首板，加1分")
+        
+        if not reasons:
+            return 0, "无板块联动数据"
+        
+        return score, "; ".join(reasons)
+
+    def _score_market_sentiment(self, pool_info: Dict) -> tuple:
+        """
+        打分项6：市场情绪温度
+
+        只使用少量稳定字段，避免把情绪分数做得过拟合。
+        """
+        sentiment = pool_info.get('market_sentiment') or {}
+        if not sentiment:
+            return 0, "无市场情绪数据"
+
+        temperature = sentiment.get('temperature', 'neutral')
+        score = 0
+        reasons = []
+
+        if temperature == 'hot':
+            score += 4
+            reasons.append("市场情绪火热，加4分")
+        elif temperature == 'warm':
+            score += 2
+            reasons.append("市场情绪回暖，加2分")
+        elif temperature == 'ice':
+            score -= 4
+            reasons.append("市场情绪冰点，扣4分")
+        else:
+            reasons.append("市场情绪中性")
+
+        hot_sector_count = int(sentiment.get('hot_sector_count', 0) or 0)
+        if hot_sector_count >= 2:
+            score += 1
+            reasons.append(f"{hot_sector_count}个热点板块共振，加1分")
+        elif hot_sector_count == 0 and int(sentiment.get('top_sector_count', 0) or 0) <= 2:
+            score -= 1
+            reasons.append("缺少板块共振，扣1分")
+
+        max_limit_count = int(sentiment.get('max_limit_count', 0) or 0)
+        if max_limit_count >= 3:
+            score += 1
+            reasons.append(f"连板高度{max_limit_count}板，加1分")
+        elif max_limit_count <= 1:
+            score -= 1
+            reasons.append("连板高度不足，扣1分")
+
+        return score, "; ".join(reasons)
+
+    def _score_board_style_fit(self, code: str, pool_info: Dict) -> tuple:
+        """
+        打分项7：当前市场风格与标的板块的匹配度
+        """
+        sentiment = pool_info.get('market_sentiment') or {}
+        if not sentiment:
+            return 0, "无风格数据"
+
+        board_type = pool_info.get('board_type') or _get_board_type(code)
+        dominant_board = sentiment.get('dominant_board', '')
+        style_bias = sentiment.get('style_bias', 'balanced')
+
+        board_names = {
+            'main': '主板',
+            'gem': '创业板',
+            'star': '科创板',
+            'bse': '北交所',
+        }
+        board_name = board_names.get(board_type, '未知板块')
+
+        if style_bias == 'premium_smallcap':
+            if board_type in ('gem', 'star'):
+                score = 4
+                reason = f"当前风格偏20cm高弹性，{board_name}标的匹配，加4分"
+                if dominant_board == board_type:
+                    score += 1
+                    reason += "；且同板块是当日主导风格，再加1分"
+                return score, reason
+            if board_type == 'main':
+                return -2, "当前风格偏20cm高弹性，主板接力辨识度受压，扣2分"
+            return 0, f"当前风格偏20cm，但{board_name}相关性一般"
+
+        if style_bias == 'main_board':
+            if board_type == 'main':
+                return 2, "当前风格偏主板连板，标的匹配，加2分"
+            if board_type in ('gem', 'star'):
+                return -2, f"当前风格偏主板连板，{board_name}跟风性价比偏低，扣2分"
+            return 0, f"当前风格偏主板，{board_name}中性"
+
+        if dominant_board == board_type and board_type in ('gem', 'star', 'main'):
+            return 1, f"市场风格均衡，但{board_name}略占优，加1分"
+
+        return 0, "市场风格均衡，不额外加分"
+    
+    # ===================================================
+    # 推荐生成
+    # ===================================================
+    
     def _generate_recommendation(self, filter_result: Dict, score_result: Dict) -> str:
         """
         生成推荐意见
@@ -419,41 +780,75 @@ class ChipQualityStrategy:
         """
         if not filter_result['pass_all']:
             reasons = []
-            if not filter_result['filter1_chip_dirty']:
+            if not filter_result.get('filter1_chip_dirty_pass', True):
                 reasons.append(filter_result['filter1_reason'])
-            if not filter_result['filter2_yizi_burst']:
+            if not filter_result.get('filter2_yizi_burst_pass', True):
                 reasons.append(filter_result['filter2_reason'])
+            if not filter_result.get('filter3_volume_burst_pass', True):
+                reasons.append(filter_result['filter3_reason'])
+            if not filter_result.get('filter4_high_accel_pass', True):
+                reasons.append(filter_result['filter4_reason'])
             return f"❌ 不推荐：{'; '.join(reasons)}"
         
         total_score = score_result['total']
         
-        if total_score >= 20:
-            return f"✅ 强烈推荐：筹码质量优秀，得分{total_score}分"
-        elif total_score >= 10:
+        if total_score >= 25:
+            return f"🔥 强烈推荐：筹码质量优秀，得分{total_score}分"
+        elif total_score >= 15:
+            return f"✅ 推荐：筹码质量良好，得分{total_score}分"
+        elif total_score >= 8:
             return f"⚠️ 谨慎参与：筹码质量一般，得分{total_score}分"
         elif total_score > 0:
             return f"⚠️ 观望为主：筹码质量较弱，得分{total_score}分"
         else:
             return f"❌ 不推荐：筹码质量差，得分{total_score}分"
     
-    def batch_analyze(self, codes: list, days: int = 30) -> Dict[str, Dict]:
+    # ===================================================
+    # 批量分析
+    # ===================================================
+    
+    def batch_analyze(self, codes: list, days: int = 30, pool_data: List[Dict] = None) -> Dict[str, Dict]:
         """
         批量分析股票
         
         Args:
             codes: 股票代码列表
             days: 历史数据天数
+            pool_data: 涨停池数据列表（可选，用于提供封单/时间等信息）
         
         Returns:
             {code: analysis_result}
         """
         print(f"[筹码质量分析] 开始批量分析 {len(codes)} 只股票...")
         
+        pool_data = pool_data if pool_data is not None else self.data_fetcher.get_limit_up_pool()
+        market_sentiment = self.data_fetcher.get_market_sentiment(pool_data)
+
+        # 构建板块统计和 code -> enriched_pool_info 映射
+        sector_count_map = {}
+        for item in pool_data:
+            sector = item.get('sector', '其他')
+            sector_count_map[sector] = sector_count_map.get(sector, 0) + 1
+
+        pool_map = {}
+        for item in pool_data:
+            enriched = dict(item)
+            sector = enriched.get('sector', '其他')
+            enriched['sector_zt_count'] = sector_count_map.get(sector, 0)
+            enriched['market_sentiment'] = market_sentiment
+            pool_map[enriched.get('code', '')] = enriched
+        
         results = {}
         
         for idx, code in enumerate(codes):
             try:
-                result = self.analyze_stock(code, days)
+                pool_info = pool_map.get(code, {
+                    'board_type': _get_board_type(code),
+                    'limit_up_threshold': _get_limit_up_threshold(code),
+                    'market_sentiment': market_sentiment,
+                    'sector_zt_count': 0,
+                })
+                result = self.analyze_stock(code, days, pool_info=pool_info)
                 results[code] = result
                 
                 # 每10只打印进度
@@ -522,11 +917,15 @@ class ChipQualityStrategy:
 if __name__ == "__main__":
     from data_fetcher import DataFetcher
     
-    print("=== 筹码质量策略测试 ===\n")
+    print("=== 筹码质量策略测试 v2.0 ===\n")
     
     # 初始化
     fetcher = DataFetcher()
-    strategy = ChipQualityStrategy(fetcher)
+    strategy = ChipQualityStrategy(fetcher, config={
+        'turnover_min': 5.0,
+        'turnover_max': 25.0,
+        'turnover_high': 40.0,
+    })
     
     # 获取涨停池进行测试
     zt_pool = fetcher.get_limit_up_pool()
@@ -536,31 +935,44 @@ if __name__ == "__main__":
         
         print(f"测试股票: {test_codes}\n")
         
-        # 批量分析
-        results = strategy.batch_analyze(test_codes)
+        # 批量分析（传入涨停池数据）
+        results = strategy.batch_analyze(test_codes, pool_data=zt_pool)
         
         for code, result in results.items():
             print(f"\n{'='*60}")
             print(f"股票: {code} {result['name']}")
+            threshold = _get_limit_up_threshold(code)
+            print(f"涨停阈值: {threshold}% ({'20cm板' if threshold > 10 else '10cm板'})")
             print(f"通过风控: {'✅' if result['pass_risk_filter'] else '❌'}")
             print(f"总得分: {result['total_score']}")
             print(f"推荐意见: {result['recommendation']}")
             
             if not result['pass_risk_filter']:
                 print(f"\n风控原因:")
-                if not result['filter_details']['filter1_chip_dirty']:
-                    print(f"  - {result['filter_details']['filter1_reason']}")
-                if not result['filter_details']['filter2_yizi_burst']:
-                    print(f"  - {result['filter_details']['filter2_reason']}")
+                fd = result['filter_details']
+                for key in ['filter1_chip_dirty_pass', 'filter2_yizi_burst_pass', 
+                           'filter3_volume_burst_pass', 'filter4_high_accel_pass']:
+                    if not fd.get(key, True):
+                        reason_key = key.replace('_pass', '').replace('filter', 'filter') + '_reason'
+                        # 构造正确的 reason key
+                        idx = key.split('_')[0] + '_' + key.split('_')[1]
+                        print(f"  - {fd.get(key.replace('_pass', '_reason'), '未知')}")
             
-            if result['total_score'] > 0:
+            sd = result.get('score_details', {})
+            if sd.get('total', 0) != -999:
                 print(f"\n得分详情:")
-                score1 = result['score_details']['score1_limitup_quality']
-                score2 = result['score_details']['score2_weak_to_strong']
-                if score1 != 0:
-                    print(f"  - 筹码质量分: {score1} ({result['score_details']['score1_reason']})")
-                if score2 != 0:
-                    print(f"  - 弱转强分: {score2} ({result['score_details']['score2_reason']})")
+                for i, name in enumerate(['筹码质量', '弱转强', '封单强度', '首封时间', '板块联动'], 1):
+                    score_key = f'score{i}_'
+                    # 找到对应的分数
+                    for k, v in sd.items():
+                        if k.startswith(score_key) and not k.endswith('_reason'):
+                            reason_k = k + '_reason' if not k.endswith('_reason') else k
+                            # 找reason
+                            r_key = [rk for rk in sd.keys() if rk.startswith(score_key) and rk.endswith('_reason')]
+                            reason = sd.get(r_key[0], '') if r_key else ''
+                            if v != 0:
+                                print(f"  - {name}: {v:+d}分 ({reason})")
+                            break
         
         print(f"\n{'='*60}")
         print("=== 高质量股票推荐 (得分>=10) ===")

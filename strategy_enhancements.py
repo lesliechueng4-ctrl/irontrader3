@@ -29,7 +29,7 @@ class StockClassifier:
             ticker_str = str(ticker)
             
             # 科技股代码特征
-            if ticker_str.startswith('300'):  # 创业板
+            if ticker_str.startswith(('300', '301', '688')):  # 创业板
                 return 'tech'
             
             # 大盘蓝筹代码（人工维护列表）

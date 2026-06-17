@@ -4,7 +4,7 @@ IronTrader Risk Control Engine
 """
 
 from enum import Enum
-from typing import Dict
+from typing import Dict, List, Optional
 from data_fetcher import DataFetcher
 
 
@@ -37,7 +37,7 @@ class RiskEngine:
     def __init__(self, data_fetcher: DataFetcher):
         self.data_fetcher = data_fetcher
         
-    def get_market_state(self) -> Dict:
+    def get_market_state(self, zt_pool: Optional[List[Dict]] = None) -> Dict:
         """
         获取当前市场状态
         Returns:
@@ -50,9 +50,11 @@ class RiskEngine:
                 'suggestion': str
             }
         """
-        # 获取指数与MA5数据
+        # 获取指数、涨停池与市场情绪
         index_data = self.data_fetcher.get_index_with_ma5()
         history = self.data_fetcher.get_index_history(days=10)
+        zt_pool = zt_pool if zt_pool is not None else self.data_fetcher.get_limit_up_pool()
+        sentiment = self.data_fetcher.get_market_sentiment(zt_pool)
         
         if 'error' in index_data:
             return self._error_state(index_data['error'])
@@ -75,7 +77,8 @@ class RiskEngine:
                     index_data,
                     False,
                     f"指数在MA5下方{distance_pct:.2f}%，{'连续下跌' if consecutive_down else '偏离过大'}",
-                    "⛔ 严禁操作 - 空仓观望"
+                    "⛔ 严禁操作 - 空仓观望",
+                    sentiment=sentiment
                 )
             else:
                 # 无主线震荡
@@ -85,13 +88,15 @@ class RiskEngine:
                     index_data,
                     False,
                     "指数在MA5下方，市场无明确方向",
-                    "⚠️ 空仓观望 - 等待市场企稳"
+                    "⚠️ 空仓观望 - 等待市场企稳",
+                    sentiment=sentiment
                 )
         else:
             # 指数在MA5上方
             consecutive_up = self._check_consecutive_up(history)
-            has_theme = self._check_main_theme()
-            has_leader = self._check_speculative_leader()
+            has_theme = self._check_main_theme(zt_pool, sentiment)
+            has_leader = self._check_speculative_leader(zt_pool)
+            premium_style = self._check_premium_smallcap_style(sentiment)
             
             if consecutive_up or distance_pct > MA5_DEVIATION_THRESHOLD:
                 # 主升浪
@@ -101,7 +106,8 @@ class RiskEngine:
                     index_data,
                     True,
                     f"指数在MA5上方{distance_pct:.2f}%，{'连续上涨' if consecutive_up else '强势上攻'}",
-                    "🚀 重仓主线 - 追涨龙头"
+                    "🚀 聚焦20cm核心 - 只做高弹性前排" if premium_style else "🚀 重仓主线 - 追涨龙头",
+                    sentiment=sentiment
                 )
             elif has_leader:
                 # 投机抱团
@@ -111,7 +117,8 @@ class RiskEngine:
                     index_data,
                     True,
                     "存在超级龙头（封单>19亿）",
-                    "🎯 只做龙头 - 严守纪律"
+                    "🎯 聚焦20cm辨识度龙头 - 控制仓位" if premium_style else "🎯 只做龙头 - 严守纪律",
+                    sentiment=sentiment
                 )
             elif has_theme:
                 # 有主线震荡
@@ -120,8 +127,20 @@ class RiskEngine:
                     MarketStateType.TRADABLE,
                     index_data,
                     True,
-                    "指数在MA5上方，主线明确",
-                    "📊 低吸核心 - 埋伏主线"
+                    "指数在MA5上方，20cm风格活跃" if premium_style else "指数在MA5上方，主线明确",
+                    "📊 围绕创业板/科创板核心低吸" if premium_style else "📊 低吸核心 - 埋伏主线",
+                    sentiment=sentiment
+                )
+            elif premium_style and sentiment.get('temperature') in ('warm', 'hot'):
+                # 风格强于指数的高弹性窗口
+                return self._create_state_result(
+                    MarketState.OSCILLATION_WITH_THEME,
+                    MarketStateType.TRADABLE,
+                    index_data,
+                    True,
+                    "指数在MA5上方，高弹性风格主导，适合聚焦20cm前排",
+                    "🎯 轻仓试错20cm核心 - 只做创业板/科创板前排",
+                    sentiment=sentiment
                 )
             else:
                 # 无主线震荡（即使指数在MA5上方，但无主线也不做）
@@ -131,7 +150,8 @@ class RiskEngine:
                     index_data,
                     False,
                     "指数虽在MA5上方但无明确主线",
-                    "⚠️ 谨慎观望 - 等待主线明确"
+                    "⚠️ 谨慎观望 - 等待主线明确",
+                    sentiment=sentiment
                 )
     
     def _check_consecutive_down(self, history) -> bool:
@@ -146,7 +166,7 @@ class RiskEngine:
             if recent.iloc[i]['close'] < recent.iloc[i-1]['close']:
                 down_count += 1
         
-        return down_count >= CONSECUTIVE_DAYS_THRESHOLD
+        return down_count >= max(CONSECUTIVE_DAYS_THRESHOLD - 1, 1)
     
     def _check_consecutive_up(self, history) -> bool:
         """检查是否连续上涨"""
@@ -160,34 +180,60 @@ class RiskEngine:
             if recent.iloc[i]['close'] > recent.iloc[i-1]['close']:
                 up_count += 1
         
-        return up_count >= CONSECUTIVE_DAYS_THRESHOLD
+        return up_count >= max(CONSECUTIVE_DAYS_THRESHOLD - 1, 1)
     
-    def _check_main_theme(self) -> bool:
+    def _check_main_theme(
+        self,
+        zt_pool: Optional[List[Dict]] = None,
+        sentiment: Optional[Dict] = None
+    ) -> bool:
         """
         检查是否有主线
         判定标准：某个板块连续3天都有涨停股，且今天≥3只涨停
         """
-        hot_sectors = self.data_fetcher.get_hot_sectors()
+        if zt_pool is None:
+            hot_sectors = self.data_fetcher.get_hot_sectors()
+        else:
+            sector_count = {}
+            for stock in zt_pool:
+                sector = stock.get('sector', '其他')
+                sector_count[sector] = sector_count.get(sector, 0) + 1
+            hot_sectors = [{'name': name, 'count': count} for name, count in sector_count.items()]
         
         # 简化处理：如果有板块今日涨停股≥3只，认为有主线
         for sector in hot_sectors:
             if sector['count'] >= MAIN_THEME_MIN_STOCKS:
                 return True
-        
-        return False
+
+        # 高弹性风格活跃时，允许创业板/科创板成为“情绪主线”
+        sentiment = sentiment or {}
+        return (
+            sentiment.get('style_bias') == 'premium_smallcap'
+            and sentiment.get('premium_count', 0) >= 4
+            and sentiment.get('temperature') in ('warm', 'hot')
+        )
     
-    def _check_speculative_leader(self) -> bool:
+    def _check_speculative_leader(self, zt_pool: Optional[List[Dict]] = None) -> bool:
         """
         检查是否有投机龙头
         判定标准：封单金额超过19亿
         """
-        zt_pool = self.data_fetcher.get_limit_up_pool()
+        zt_pool = zt_pool if zt_pool is not None else self.data_fetcher.get_limit_up_pool()
         
         for stock in zt_pool:
             if stock['seal_amount'] >= LEADER_SEAL_AMOUNT:
                 return True
         
         return False
+
+    @staticmethod
+    def _check_premium_smallcap_style(sentiment: Optional[Dict]) -> bool:
+        """Detect whether the current tape is favoring 20cm/high-beta names."""
+        sentiment = sentiment or {}
+        return (
+            sentiment.get('style_bias') == 'premium_smallcap'
+            and sentiment.get('temperature') in ('warm', 'hot')
+        )
     
     def _create_state_result(
         self,
@@ -196,7 +242,8 @@ class RiskEngine:
         index_data: Dict,
         can_trade: bool,
         reason: str,
-        suggestion: str
+        suggestion: str,
+        sentiment: Optional[Dict] = None
     ) -> Dict:
         """创建状态结果"""
         return {
@@ -206,7 +253,8 @@ class RiskEngine:
             'index_data': index_data,
             'reason': reason,
             'suggestion': suggestion,
-            'color': self._get_state_color(state_type)
+            'color': self._get_state_color(state_type),
+            'sentiment': sentiment or {}
         }
     
     def _get_state_color(self, state_type: MarketStateType) -> str:
@@ -225,7 +273,8 @@ class RiskEngine:
             'index_data': {},
             'reason': error_msg,
             'suggestion': '⚠️ 数据获取失败，请稍后重试',
-            'color': '#718096'  # 灰色
+            'color': '#718096',  # 灰色
+            'sentiment': {}
         }
 
 

@@ -13,7 +13,7 @@ class StockSelector:
     def __init__(self, data_fetcher: DataFetcher):
         self.data_fetcher = data_fetcher
     
-    def analyze_stock(self, code: str) -> Dict:
+    def analyze_stock(self, code: str, zt_pool: Optional[List[Dict]] = None) -> Dict:
         """
         分析个股
         Args:
@@ -44,7 +44,7 @@ class StockSelector:
             }
         
         # 检查是否在涨停池中
-        zt_pool = self.data_fetcher.get_limit_up_pool()
+        zt_pool = zt_pool if zt_pool is not None else self.data_fetcher.get_limit_up_pool()
         zt_stock = self._find_in_pool(code, zt_pool)
         
         if not zt_stock:
@@ -59,7 +59,10 @@ class StockSelector:
                 'limit_count': 0,
                 'first_limit_time': '',
                 'is_leader': False,
-                'buyable_reason': '未涨停，可正常交易'
+                'buyable_reason': '未涨停，可正常交易',
+                'board_type': stock_data.get('board_type', ''),
+                'limit_up_threshold': stock_data.get('limit_up_threshold', 0),
+                'turnover_rate': stock_data.get('turnover_rate', 0)
             }
         
         # 分析涨停股
@@ -77,7 +80,9 @@ class StockSelector:
             'first_limit_time': zt_stock['first_limit_time'],
             'is_leader': is_leader,
             'buyable_reason': buyable_reason,
-            'turnover_rate': zt_stock['turnover_rate']
+            'turnover_rate': zt_stock['turnover_rate'],
+            'board_type': zt_stock.get('board_type', stock_data.get('board_type', '')),
+            'limit_up_threshold': zt_stock.get('limit_up_threshold', stock_data.get('limit_up_threshold', 0))
         }
     
     def _find_in_pool(self, code: str, zt_pool: List[Dict]) -> Optional[Dict]:
@@ -87,6 +92,19 @@ class StockSelector:
             if stock['code'] == code:
                 return stock
         return None
+
+    @staticmethod
+    def _normalize_trade_time(value: str) -> str:
+        """Normalize pool timestamps before buyability comparisons."""
+        digits = ''.join(ch for ch in str(value or '').strip() if ch.isdigit())
+        if len(digits) == 6:
+            return f"{digits[0:2]}:{digits[2:4]}:{digits[4:6]}"
+        if len(digits) == 4:
+            return f"{digits[0:2]}:{digits[2:4]}:00"
+        text = str(value or '').strip()
+        if len(text) == 5 and text.count(':') == 1:
+            return f"{text}:00"
+        return text
     
     def _check_buyability(self, stock: Dict) -> tuple:
         """
@@ -94,7 +112,7 @@ class StockSelector:
         Returns:
             (is_buyable: bool, reason: str)
         """
-        first_limit_time = stock.get('first_limit_time', '')
+        first_limit_time = self._normalize_trade_time(stock.get('first_limit_time', ''))
         
         # 一字板判定：开盘就涨停（09:25-09:30封板）
         if first_limit_time and first_limit_time <= '09:30:00':
@@ -256,7 +274,7 @@ class StockSelector:
             
             # 检查是否20cm板
             code_prefix = stock['code'][:3]
-            if code_prefix not in ['300', '688']:
+            if code_prefix not in ['300', '301', '688']:
                 continue
             
             # 检查是否首板

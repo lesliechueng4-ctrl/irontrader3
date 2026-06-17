@@ -21,7 +21,7 @@ class DecisionMaker:
         """
         对个股做出决策
         决策流程:
-        1. 风控铁律检查 - 空仓态直接IGNORE
+        1. 风控铁律检查 - 空仓态降级为WATCH+警告（不再拦截分析）
         2. 个股分析 - 涨停状态、封单金额
         3. 可买性检查 - 一字板/秒板判定
         4. 板块效应检查 - 同板块涨停数
@@ -40,20 +40,9 @@ class DecisionMaker:
                 'arbitrage': List[Dict]  # 20cm套利推荐
             }
         """
-        # Step 1: 风控检查
+        # Step 1: 获取市场状态（空仓态不再拦截，结果经 _apply_market_gate 降级）
         market_state = self.risk_engine.get_market_state()
-        
-        if not market_state['can_trade']:
-            return {
-                'decision': 'IGNORE',
-                'confidence': 5,
-                'reason': f"❌ 风控铁律: {market_state['state']} - {market_state['suggestion']}",
-                'market_state': market_state,
-                'stock_info': {},
-                'sector_effect': {},
-                'arbitrage': []
-            }
-        
+
         # Step 2: 个股分析
         stock_info = self.stock_selector.analyze_stock(code)
         
@@ -113,8 +102,8 @@ class DecisionMaker:
         # Step 6: 龙头判定与决策
         if stock_info['is_leader']:
             confidence = self._calculate_confidence(market_state, stock_info, sector_effect)
-            
-            return {
+
+            return self._apply_market_gate({
                 'decision': 'BUY',
                 'confidence': confidence,
                 'reason': self._generate_buy_reason(market_state, stock_info, sector_effect),
@@ -122,7 +111,7 @@ class DecisionMaker:
                 'stock_info': stock_info,
                 'sector_effect': sector_effect,
                 'arbitrage': []
-            }
+            }, market_state)
         else:
             return {
                 'decision': 'IGNORE',
@@ -134,6 +123,25 @@ class DecisionMaker:
                 'arbitrage': []
             }
     
+    @staticmethod
+    def _market_risk_warning(market_state: Dict) -> str:
+        """空仓态时生成风控警告文案，可交易时返回空串"""
+        if not market_state or market_state.get('can_trade', True):
+            return ''
+        return f"⚠️ 风控警告: {market_state.get('state', '未知')} - {market_state.get('suggestion', '建议空仓观望')}"
+
+    def _apply_market_gate(self, result: Dict, market_state: Dict) -> Dict:
+        """市场风控降级：空仓态下 BUY 降级为 WATCH，confidence ≤2，附加警告"""
+        warning = self._market_risk_warning(market_state)
+        if not warning:
+            return result
+        result['risk_warning'] = warning
+        if result.get('decision') == 'BUY':
+            result['decision'] = 'WATCH'
+            result['confidence'] = min(int(result.get('confidence', 1)), 2)
+            result['reason'] = f"{warning}（仅观察，不建议买入）；{result.get('reason', '')}"
+        return result
+
     def _calculate_confidence(
         self,
         market_state: Dict,
@@ -255,20 +263,10 @@ class DecisionMaker:
         """
         单只股票决策（使用预获取的共享数据）
         """
-        # 风控检查
-        if not market_state['can_trade']:
-            return {
-                'decision': 'IGNORE',
-                'confidence': 5,
-                'reason': f"❌ 风控铁律: {market_state['state']} - {market_state['suggestion']}",
-                'market_state': market_state,
-                'stock_info': {},
-                'sector_effect': {},
-                'arbitrage': []
-            }
-        
+        # 注：空仓态不再直接拦截，照常分析，结果经 _apply_market_gate 降级
+
         # 个股分析（使用共享的zt_pool）
-        stock_info = self.stock_selector.analyze_stock(code)
+        stock_info = self.stock_selector.analyze_stock(code, zt_pool=zt_pool)
         
         if 'error' in stock_info:
             return {
@@ -327,8 +325,8 @@ class DecisionMaker:
         
         if is_leader:
             confidence = self._calculate_confidence(market_state, stock_info, sector_effect)
-            
-            return {
+
+            return self._apply_market_gate({
                 'decision': 'BUY',
                 'confidence': confidence,
                 'reason': self._generate_buy_reason(market_state, stock_info, sector_effect),
@@ -336,7 +334,7 @@ class DecisionMaker:
                 'stock_info': stock_info,
                 'sector_effect': sector_effect,
                 'arbitrage': []
-            }
+            }, market_state)
         else:
             return {
                 'decision': 'IGNORE',

@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IronTrader - 智能铁律交易系统</title>
     <!-- Original IronTrader Styles -->
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260612-hero-btn-v1">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
@@ -380,6 +380,7 @@
         <div class="tab-container">
             <button class="tab-btn active" onclick="switchTab('dashboard')">📊 市场概览</button>
             <button class="tab-btn" onclick="switchTab('ai')">🤖 AI 预测</button>
+            <button class="tab-btn" onclick="switchTab('lowbuy')">🎯 低吸雷达</button>
         </div>
 
         <!-- Tab 1: Market Dashboard -->
@@ -545,6 +546,38 @@
                 style="text-align: center; color: rgba(255,255,255,0.7); margin-top: 10px; font-size: 0.8rem;"></div>
         </div>
 
+        <!-- Tab 3: Low-Buy Radar (低吸雷达) -->
+        <div id="tab-lowbuy" class="tab-content">
+            <!-- 情绪周期仪表盘 -->
+            <div id="sentiment-panel" class="lowbuy-section">
+                <div class="loading-spinner">加载情绪数据...</div>
+            </div>
+
+            <!-- 个股分析 -->
+            <section class="lowbuy-section">
+                <div class="lowbuy-search">
+                    <input type="text" id="lowbuy-code-input" placeholder="输入股票代码 (如: 603083)" maxlength="6">
+                    <button class="lowbuy-analyze-btn" onclick="analyzeLowBuy()">🔍 综合分析</button>
+                    <button class="lowbuy-scan-btn" id="scan-btn" onclick="scanCandidates()">全A低吸扫描</button>
+                    <button class="lowbuy-scan-btn scanner-wash-btn" id="wash-scan-btn" onclick="scanWashPatterns()">洗盘形态扫描</button>
+                    <button class="lowbuy-scan-btn scanner-rebound-btn" id="rebound-scan-btn" onclick="scanLimitDownRebound()">A股条件筛选</button>
+                    <button class="lowbuy-scan-btn scanner-hero-btn" id="hero-scan-btn" onclick="scanHeroes()">🦸 逆势英雄</button>
+                </div>
+            </section>
+
+            <!-- 分析结果 -->
+            <div id="analysis-panel" class="lowbuy-section"></div>
+
+            <!-- 候选股列表 -->
+            <div id="candidates-panel" class="lowbuy-section"></div>
+
+            <!-- 板块资金 -->
+            <section class="lowbuy-section">
+                <h2 style="color:#fff; margin-bottom:12px;">💰 板块资金流向</h2>
+                <div id="sector-panel"></div>
+            </section>
+        </div>
+
         <!-- Footer -->
         <footer class="footer">
             <div class="disclaimer">
@@ -556,8 +589,9 @@
         </footer>
     </div>
 
-    // Scripts -->
-    <script src="/static/app.js"></script>
+    <!-- Scripts -->
+    <script src="/static/app.js?v=20260612-unified-v1"></script>
+    <script src="/static/lowbuy.js?v=20260612-unified-v1"></script>
     <script>
         // 添加涨停股池刷新按钮事件
         document.addEventListener('DOMContentLoaded', function () {
@@ -583,6 +617,10 @@
             // Resize charts if needed
             if (tabName === 'ai' && window.priceChart) {
                 setTimeout(() => window.priceChart.resize(), 100);
+            }
+            // Init low-buy tab
+            if (tabName === 'lowbuy') {
+                initLowBuy();
             }
         }
 

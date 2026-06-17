@@ -311,7 +311,7 @@ function renderHotSectors(sectors) {
 // 加载涨停股池
 async function loadZtPool(refresh = false) {
     try {
-        const url = refresh ? `${API_BASE}/api/zt-pool?refresh=true` : `${API_BASE}/api/zt-pool`;
+        const url = refresh ? `${API_BASE}/api/zt-pool?refresh=1` : `${API_BASE}/api/zt-pool`;
         const response = await fetch(url);
         const result = await response.json();
 
@@ -357,8 +357,6 @@ function renderZtPool(stocks) {
                         ${starsHtml}
                         <span class="stock-code">${stock.code}</span>
                     </div>
-                </div>
-                    <span class="stock-code">${stock.code}</span>
                 </div>
                 <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.875rem;">
                     <span style="color: var(--text-secondary);">${stock.sector}</span>

@@ -28,7 +28,7 @@
 
 ### 方式1：直接启动 Flask 应用
 ```bash
-cd C:\Users\k1_adm\Desktop\code\code\irontrader3
+cd C:\Users\Admin\Documents\irontrader3
 python app.py
 ```
 
@@ -36,8 +36,8 @@ python app.py
 
 ### 方式2：运行诊断脚本
 ```bash
-cd C:\Users\k1_adm\Desktop\code\code\irontrader3
-python test_full_diagnosis.py
+cd C:\Users\Admin\Documents\irontrader3
+.\.venv\Scripts\python.exe tests\manual\test_full_diagnosis.py
 ```
 
 这个脚本会测试所有组件是否正常工作
@@ -156,7 +156,7 @@ GET /api/stock/{code}
 ### 问题：筹码质量分析失败
 
 **解决方法：**
-1. 运行 `test_full_diagnosis.py` 进行完整诊断
+1. 运行 `tests/manual/test_full_diagnosis.py` 进行完整诊断
 2. 检查 AKShare 是否能正常获取数据
 3. 确认股票代码格式正确
 
@@ -185,4 +185,4 @@ GET /api/stock/{code}
 
 ---
 
-如有问题，请运行 `test_full_diagnosis.py` 进行诊断。
+如有问题，请运行 `tests/manual/test_full_diagnosis.py` 进行诊断。
