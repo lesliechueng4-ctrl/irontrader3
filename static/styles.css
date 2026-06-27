@@ -1297,6 +1297,100 @@ body {
     line-height: 1.45;
 }
 
+/* --- Excel 式交互表格（排序 / 列筛选 / 近期快捷） --- */
+.itable-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 6px 0 10px;
+}
+.itable-search {
+    flex: 1 1 240px;
+    min-width: 200px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+    outline: none;
+}
+.itable-search:focus { border-color: var(--accent-primary); }
+.itable-recent {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+.itable-recent-btn,
+.itable-reset {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.itable-recent-btn:hover,
+.itable-reset:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+.itable-recent-btn.active {
+    background: var(--accent-primary);
+    color: #fff;
+    border-color: var(--accent-primary);
+}
+.itable-count {
+    margin-left: auto;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.itable-mount .scanner-table-wrap {
+    max-height: 70vh;
+    overflow: auto;
+}
+.itable thead th {
+    position: sticky;
+    background: var(--bg-secondary);
+    z-index: 2;
+}
+.itable .itable-head-row th { top: 0; }
+.itable .itable-filter-row th {
+    top: 39px;
+    padding: 4px 6px;
+    border-bottom: 2px solid var(--border-color);
+}
+.itable-th {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.itable-th:hover { color: var(--text-primary); }
+.itable-sort {
+    margin-left: 4px;
+    color: var(--accent-primary);
+    font-size: 0.7rem;
+}
+.itable-filter {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 0.3rem 0.45rem;
+    font-size: 0.78rem;
+    outline: none;
+}
+.itable-filter:focus { border-color: var(--accent-primary); }
+.itable-idx { width: 42px; }
+
 /* --- Loading / Error / Empty --- */
 .loading-spinner {
     text-align: center;

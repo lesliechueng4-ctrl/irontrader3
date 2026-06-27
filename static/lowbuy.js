@@ -584,41 +584,28 @@ function renderHeroes(result) {
         '强势英雄': 'watch',
         '抗跌英雄': 'wait',
     };
+    heroes.forEach((h) => { h._rowClass = levelClass[h.hero_level] || 'wait'; });
 
-    const rows = heroes.map((h, i) => {
-        const cls = levelClass[h.hero_level] || 'wait';
-        const seal = h.is_limit_up && h.seal_amount > 0 ? `${h.seal_amount}亿` : '-';
-        return `
-            <tr class="candidate-row ${cls}" onclick="analyzeLowBuyByCode('${h.code}')">
-                <td>${i + 1}</td>
-                <td class="code-cell">${h.code}</td>
-                <td>${escapeHtml(h.name)}</td>
-                <td><span class="decision-tag ${cls}">${h.hero_level}</span></td>
-                <td class="score-cell">${h.score}</td>
-                <td>${h.change_pct}%</td>
-                <td>${h.turnover}%</td>
-                <td>${h.volume_ratio}</td>
-                <td>${seal}</td>
-                <td>${h.relative_strength}%</td>
-            </tr>
-        `;
-    }).join('');
+    const columns = [
+        { label: '代码', className: 'code-cell', type: 'string', value: (r) => r.code },
+        { label: '名称', value: (r) => r.name },
+        { label: '等级', value: (r) => r.hero_level, render: (r) => `<span class="decision-tag ${levelClass[r.hero_level] || 'wait'}">${escapeHtml(r.hero_level || '')}</span>` },
+        { label: '评分', className: 'score-cell', type: 'number', value: (r) => r.score },
+        { label: '涨幅%', type: 'number', value: (r) => r.change_pct },
+        { label: '换手%', type: 'number', value: (r) => r.turnover },
+        { label: '量比', type: 'number', value: (r) => r.volume_ratio },
+        { label: '封单(亿)', type: 'number', value: (r) => (r.is_limit_up && r.seal_amount > 0 ? r.seal_amount : ''), render: (r) => (r.is_limit_up && r.seal_amount > 0 ? `${r.seal_amount}亿` : '-') },
+        { label: '近10日%', type: 'number', value: (r) => r.relative_strength },
+    ];
 
     panel.innerHTML = headerHtml + `
         <div class="candidates-count">发现 ${heroes.length} 只逆势英雄（已剔除超跌反弹/天量换手/新股）</div>
-        <table class="candidates-table">
-            <thead>
-                <tr>
-                    <th>#</th><th>代码</th><th>名称</th><th>等级</th><th>评分</th>
-                    <th>涨幅</th><th>换手</th><th>量比</th><th>封单</th><th>近10日</th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
+        <div class="itable-mount"></div>
         <div class="scanner-meta" style="margin-top:8px">
             ⚠️ 操作提示：暴跌当日不追高。次日竞价"有分歧、开盘快速转一致"再参与是最科学的。
         </div>
     `;
+    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: heroes, rowCodeOf: (h) => h.code });
 }
 
 function renderCandidates(candidates) {
@@ -628,36 +615,25 @@ function renderCandidates(candidates) {
         return;
     }
 
-    const rows = candidates.map((c, i) => {
-        const ds = { '低吸': 'buy', '观察': 'watch', '等待': 'wait', '回避': 'avoid' };
-        const cls = ds[c.decision] || 'avoid';
-        return `
-            <tr class="candidate-row ${cls}" onclick="analyzeLowBuyByCode('${c.stock_code}')">
-                <td>${i + 1}</td>
-                <td class="code-cell">${c.stock_code}</td>
-                <td>${c.stock_name}</td>
-                <td class="score-cell">${c.total_score.toFixed(1)}</td>
-                <td><span class="decision-tag ${cls}">${c.decision}</span></td>
-                <td>${c.dimensions?.sentiment?.phase || '-'}</td>
-                <td>${c.dimensions?.sector?.status || '-'}</td>
-                <td>${c.dimensions?.fund?.signal || '-'}</td>
-                <td>${c.dimensions?.technical?.ma_alignment || '-'}</td>
-            </tr>
-        `;
-    }).join('');
+    const ds = { '低吸': 'buy', '观察': 'watch', '等待': 'wait', '回避': 'avoid' };
+    candidates.forEach((c) => { c._rowClass = ds[c.decision] || 'avoid'; });
+
+    const columns = [
+        { label: '代码', className: 'code-cell', type: 'string', value: (c) => c.stock_code },
+        { label: '名称', value: (c) => c.stock_name },
+        { label: '综合分', className: 'score-cell', type: 'number', value: (c) => c.total_score, render: (c) => (typeof c.total_score === 'number' ? c.total_score.toFixed(1) : '-') },
+        { label: '决策', value: (c) => c.decision, render: (c) => `<span class="decision-tag ${ds[c.decision] || 'avoid'}">${escapeHtml(c.decision || '')}</span>` },
+        { label: '情绪', value: (c) => c.dimensions?.sentiment?.phase || '' },
+        { label: '板块', value: (c) => c.dimensions?.sector?.status || '' },
+        { label: '资金', value: (c) => c.dimensions?.fund?.signal || '' },
+        { label: '技术', value: (c) => c.dimensions?.technical?.ma_alignment || '' },
+    ];
 
     panel.innerHTML = `
         <div class="candidates-count">发现 ${candidates.length} 只候选 (得分≥55)</div>
-        <table class="candidates-table">
-            <thead>
-                <tr>
-                    <th>#</th><th>代码</th><th>名称</th><th>综合分</th>
-                    <th>决策</th><th>情绪</th><th>板块</th><th>资金</th><th>技术</th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
+        <div class="itable-mount"></div>
     `;
+    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: candidates, rowCodeOf: (c) => c.stock_code });
 }
 
 async function runExternalScanner({ url, btnId, normalText, busyText, loadingText, title, columns, emptyText, getColumns }) {
@@ -920,6 +896,192 @@ function formatScannerValue(value) {
     return String(value);
 }
 
+// ===========================================================
+// Excel 式交互表格：列排序 + 逐列筛选 + 全表搜索 + “近期 N 天”快捷
+// 所有扫描结果表格统一复用，便于查看近期、符合条件的标的。
+// ===========================================================
+function rawCellValue(row, col) {
+    if (typeof col.value === 'function') return col.value(row);
+    return getScannerCellValue(row, col);
+}
+
+function cellHtml(row, col) {
+    if (typeof col.render === 'function') return col.render(row);
+    return escapeHtml(formatScannerValue(rawCellValue(row, col)));
+}
+
+function numericOf(value) {
+    const n = parseFloat(String(value).replace(/[%,\s]/g, ''));
+    return Number.isNaN(n) ? null : n;
+}
+
+function detectColumnType(col, rows) {
+    if (col.type) return col.type;
+    const vals = rows.map((r) => rawCellValue(r, col)).filter((v) => v !== '' && v !== null && v !== undefined);
+    if (!vals.length) return 'string';
+    if (vals.every((v) => /^\d{4}-\d{2}-\d{2}/.test(String(v)))) return 'date';
+    if (vals.every((v) => numericOf(v) !== null)) return 'number';
+    return 'string';
+}
+
+function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf }) {
+    const cols = columns.map((c) => ({ ...c, _type: detectColumnType(c, rows) }));
+    const filters = {};
+    let globalSearch = '';
+    let sortIdx = -1;
+    let sortDir = 1;
+
+    const recentCol = cols.findIndex((c) => /距今/.test(c.key || '') || /距今/.test(c.label || ''));
+    if (recentCol >= 0) {
+        sortIdx = recentCol;
+        sortDir = 1; // 距今升序 = 最近的在前
+    } else {
+        const scoreIdx = cols.findIndex((c) => c._type === 'number' && /(评分|综合分|得分|score)/i.test((c.key || '') + (c.label || '')));
+        if (scoreIdx >= 0) { sortIdx = scoreIdx; sortDir = -1; }
+    }
+
+    const recentControls = recentCol >= 0 ? `
+        <div class="itable-recent">
+            <span>只看近期：</span>
+            ${[3, 7, 15].map((n) => `<button type="button" class="itable-recent-btn" data-days="${n}">近${n}天</button>`).join('')}
+            <button type="button" class="itable-recent-btn" data-days="0">全部</button>
+        </div>` : '';
+
+    mountEl.innerHTML = `
+        <div class="itable-toolbar">
+            <input type="text" class="itable-search" placeholder="🔍 全表搜索（代码 / 名称 / 任意列）">
+            ${recentControls}
+            <span class="itable-count"></span>
+            <button type="button" class="itable-reset">重置</button>
+        </div>
+        <div class="scanner-table-wrap">
+            <table class="candidates-table scanner-table itable">
+                <thead>
+                    <tr class="itable-head-row">
+                        <th class="itable-idx">#</th>
+                        ${cols.map((c, i) => `<th class="itable-th${(c._type === 'number' || c._type === 'date') ? ' num' : ''}" data-col="${i}" title="点击排序"><span class="itable-th-label">${escapeHtml(c.label)}</span><span class="itable-sort"></span></th>`).join('')}
+                    </tr>
+                    <tr class="itable-filter-row">
+                        <th></th>
+                        ${cols.map((c, i) => `<th><input type="text" class="itable-filter" data-col="${i}" placeholder="${c._type === 'number' ? '如 >=5' : '筛选'}"></th>`).join('')}
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    `;
+
+    const tbody = mountEl.querySelector('tbody');
+    const countEl = mountEl.querySelector('.itable-count');
+    const searchInput = mountEl.querySelector('.itable-search');
+
+    function matchColumn(row, ci) {
+        const f = (filters[ci] || '').trim();
+        if (!f) return true;
+        const col = cols[ci];
+        const raw = rawCellValue(row, col);
+        if (col._type === 'number') {
+            const m = f.match(/^(>=|<=|>|<|=)\s*(-?\d+\.?\d*)$/);
+            if (m) {
+                const x = numericOf(raw);
+                if (x === null) return false;
+                const y = parseFloat(m[2]);
+                if (m[1] === '>') return x > y;
+                if (m[1] === '<') return x < y;
+                if (m[1] === '>=') return x >= y;
+                if (m[1] === '<=') return x <= y;
+                return x === y;
+            }
+        }
+        return String(formatScannerValue(raw)).toLowerCase().includes(f.toLowerCase());
+    }
+
+    function matchGlobal(row) {
+        if (!globalSearch) return true;
+        const q = globalSearch.toLowerCase();
+        return cols.some((c) => String(formatScannerValue(rawCellValue(row, c))).toLowerCase().includes(q));
+    }
+
+    function visibleRows() {
+        let out = rows.filter((r) => matchGlobal(r) && cols.every((c, ci) => matchColumn(r, ci)));
+        if (sortIdx >= 0) {
+            const col = cols[sortIdx];
+            out = out.slice().sort((a, b) => {
+                const av = rawCellValue(a, col);
+                const bv = rawCellValue(b, col);
+                const ae = av === '' || av === null || av === undefined;
+                const be = bv === '' || bv === null || bv === undefined;
+                if (ae && be) return 0;
+                if (ae) return 1;
+                if (be) return -1;
+                let cmp;
+                if (col._type === 'number') cmp = (numericOf(av) ?? 0) - (numericOf(bv) ?? 0);
+                else if (col._type === 'date') cmp = Date.parse(av) - Date.parse(bv);
+                else cmp = String(av).localeCompare(String(bv), 'zh');
+                return cmp * sortDir;
+            });
+        }
+        return out;
+    }
+
+    function render() {
+        const vr = visibleRows();
+        tbody.innerHTML = vr.map((row, index) => {
+            const code = rowCodeOf ? rowCodeOf(row) : getScannerRowCode(row);
+            const rowCls = row._rowClass || '';
+            return `<tr class="candidate-row ${rowCls}" data-code="${escapeHtml(code || '')}">
+                <td>${index + 1}</td>
+                ${cols.map((c) => `<td${c.className ? ` class="${c.className}"` : ''}>${cellHtml(row, c)}</td>`).join('')}
+            </tr>`;
+        }).join('');
+        countEl.textContent = `显示 ${vr.length} / ${rows.length} 条`;
+        mountEl.querySelectorAll('.itable-th').forEach((th, i) => {
+            th.querySelector('.itable-sort').textContent = (i === sortIdx) ? (sortDir > 0 ? '▲' : '▼') : '';
+        });
+    }
+
+    mountEl.querySelectorAll('.itable-th').forEach((th) => {
+        th.addEventListener('click', () => {
+            const i = parseInt(th.dataset.col, 10);
+            if (sortIdx === i) sortDir = -sortDir;
+            else { sortIdx = i; sortDir = cols[i]._type === 'string' ? 1 : -1; }
+            render();
+        });
+    });
+    mountEl.querySelectorAll('.itable-filter').forEach((inp) => {
+        inp.addEventListener('input', () => { filters[parseInt(inp.dataset.col, 10)] = inp.value; render(); });
+    });
+    searchInput.addEventListener('input', () => { globalSearch = searchInput.value; render(); });
+    mountEl.querySelectorAll('.itable-recent-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const days = parseInt(btn.dataset.days, 10);
+            const val = days > 0 ? `<=${days}` : '';
+            filters[recentCol] = val;
+            const inp = mountEl.querySelector(`.itable-filter[data-col="${recentCol}"]`);
+            if (inp) inp.value = val;
+            mountEl.querySelectorAll('.itable-recent-btn').forEach((b) => b.classList.toggle('active', b === btn));
+            sortIdx = recentCol; sortDir = 1;
+            render();
+        });
+    });
+    mountEl.querySelector('.itable-reset').addEventListener('click', () => {
+        Object.keys(filters).forEach((k) => delete filters[k]);
+        globalSearch = '';
+        searchInput.value = '';
+        mountEl.querySelectorAll('.itable-filter').forEach((i) => { i.value = ''; });
+        mountEl.querySelectorAll('.itable-recent-btn').forEach((b) => b.classList.remove('active'));
+        render();
+    });
+
+    tbody.addEventListener('click', (e) => {
+        const tr = e.target.closest('tr[data-code]');
+        const code = tr && tr.getAttribute('data-code');
+        if (code) analyzeLowBuyByCode(code);
+    });
+
+    render();
+}
+
 function renderExternalScannerResults({ title, columns, rows, count, elapsed, output, meta, emptyText }) {
     const panel = document.getElementById('candidates-panel');
     if (!rows.length) {
@@ -935,20 +1097,6 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
         return;
     }
 
-    const tableRows = rows.map((row, index) => {
-        const code = escapeHtml(getScannerRowCode(row));
-        return `
-            <tr class="candidate-row" ${code ? `onclick="analyzeLowBuyByCode('${code}')"` : ''}>
-                <td>${index + 1}</td>
-                ${columns.map((col) => {
-                    const value = formatScannerValue(getScannerCellValue(row, col));
-                    const className = col.className ? ` class="${col.className}"` : '';
-                    return `<td${className}>${escapeHtml(value)}</td>`;
-                }).join('')}
-            </tr>
-        `;
-    }).join('');
-
     const scannedText = meta.scanned ? `，扫描 ${meta.scanned} 只` : '';
     const outputText = output ? `<div class="scanner-output">结果文件: ${escapeHtml(output)}</div>` : '';
     panel.innerHTML = `
@@ -958,19 +1106,10 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
                 <span class="scanner-meta">发现 ${count} 条${scannedText}，耗时 ${escapeHtml(elapsed ?? '-')} 秒</span>
             </div>
             ${outputText}
-            <div class="scanner-table-wrap">
-                <table class="candidates-table scanner-table">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            ${columns.map((col) => `<th>${escapeHtml(col.label)}</th>`).join('')}
-                        </tr>
-                    </thead>
-                    <tbody>${tableRows}</tbody>
-                </table>
-            </div>
+            <div class="itable-mount"></div>
         </div>
     `;
+    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows });
 }
 
 function analyzeLowBuyByCode(code) {
