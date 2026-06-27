@@ -2033,10 +2033,19 @@ def resolve_scan_stocks(cfg: ScanConfig) -> list[StockInfo]:
         print("🚀 [洗盘扫描优化] 检测到全A股扫描，启用快速预筛选...")
         try:
             from wash_pattern_optimizer import pre_screen_wash_candidates
-            pre_filtered_codes = pre_screen_wash_candidates(cfg.stock_pool)
+            pre_filtered = pre_screen_wash_candidates(cfg.stock_pool)
 
-            if pre_filtered_codes:
-                stocks = [StockInfo(code=c) for c in pre_filtered_codes]
+            if pre_filtered:
+                # 预筛选返回 (代码, 名称) 列表；保留名称以填充结果文件“名称”列。
+                # 兼容旧返回（仅代码字符串）：缺名称时回退为空串。
+                stocks = []
+                for item in pre_filtered:
+                    if isinstance(item, (tuple, list)):
+                        code = str(item[0])
+                        name = str(item[1]) if len(item) > 1 else ""
+                    else:
+                        code, name = str(item), ""
+                    stocks.append(StockInfo(code=code, name=name))
                 print(f"✅ 使用预筛选结果：{len(stocks)} 只股票")
                 return stocks
             stocks = get_stock_pool(cfg.stock_pool, cfg.pool_source)

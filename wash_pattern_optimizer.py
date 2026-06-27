@@ -3,7 +3,7 @@
 在主扫描前使用实时数据快速过滤，减少70%数据下载量
 """
 
-def pre_screen_wash_candidates(stock_pool='all_a') -> list:
+def pre_screen_wash_candidates(stock_pool='all_a') -> list:  # -> list[tuple[str, str]]
     """
     快速预筛选：仅保留符合基础条件的股票
 
@@ -23,7 +23,8 @@ def pre_screen_wash_candidates(stock_pool='all_a') -> list:
         stock_pool: 股票池名称
 
     Returns:
-        符合条件的股票代码列表
+        符合条件的 (股票代码, 股票名称) 列表。返回名称是为了让最终结果文件
+        的“名称”列有值（StockInfo 需要 name），避免名称列空白。
     """
     try:
         import akshare as ak
@@ -44,7 +45,10 @@ def pre_screen_wash_candidates(stock_pool='all_a') -> list:
             (~df['名称'].str.contains('ST|退', na=False))  # 排除ST/退市
         ]
 
-        result = candidates['代码'].tolist()
+        result = [
+            (str(code), str(name))
+            for code, name in zip(candidates['代码'], candidates['名称'])
+        ]
         print(f"  ✅ 预筛选完成：从 {len(df)} 只缩减至 {len(result)} 只（减少 {(1-len(result)/len(df))*100:.0f}%）")
 
         return result
