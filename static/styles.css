@@ -1456,6 +1456,50 @@ body {
 }
 .cs-name { color: var(--text-secondary); }
 
+/* 结果行状态着色（已确认=绿 / 候选预警=黄 / 等待 / 回避=红） */
+.candidate-row.buy { background: rgba(16, 185, 129, 0.08); }
+.candidate-row.watch { background: rgba(245, 158, 11, 0.08); }
+.candidate-row.wait { background: rgba(148, 163, 184, 0.06); }
+.candidate-row.avoid { background: rgba(239, 68, 68, 0.08); }
+.candidate-row.buy td:first-child { border-left: 3px solid var(--accent-success); }
+.candidate-row.watch td:first-child { border-left: 3px solid var(--accent-warning); }
+.candidate-row.wait td:first-child { border-left: 3px solid var(--text-muted); }
+.candidate-row.avoid td:first-child { border-left: 3px solid var(--accent-danger); }
+
+/* 选中行高亮（点行分析后） */
+.candidate-row.selected td { background: rgba(99, 102, 241, 0.22); }
+
+/* 扫描参数设置栏 */
+.lowbuy-scan-btn.scan-settings-toggle {
+    background: linear-gradient(135deg, #475569, #334155);
+    box-shadow: 0 4px 16px rgba(71, 85, 105, 0.28);
+}
+.scan-settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+.scan-settings label { display: flex; align-items: center; gap: 6px; }
+.scan-settings select,
+.scan-settings input {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.3rem 0.45rem;
+    font-size: 0.82rem;
+}
+.scan-settings input[type="number"] { width: 64px; }
+.scan-settings-hint { color: var(--text-muted); font-size: 0.75rem; }
+
 /* --- Loading / Error / Empty --- */
 .loading-spinner {
     text-align: center;

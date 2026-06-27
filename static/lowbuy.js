@@ -524,7 +524,7 @@ function setScanButtonsBusy(busy, activeBtnId, busyText, normalText) {
 
 async function scanCandidates() {
     runExternalScannerJob({
-        startUrl: '/api/lowbuy/candidates/start?min_score=55',
+        startUrl: `/api/lowbuy/candidates/start?min_score=${getScanSettings().min_score}`,
         statusUrlBase: '/api/scanners/jobs/',
         btnId: 'scan-btn',
         normalText: '全A低吸扫描',
@@ -801,7 +801,7 @@ const WASH_PATTERN_COLUMNS = [
 
 function scanWashPatterns() {
     runExternalScannerJob({
-        startUrl: '/api/scanners/wash-pattern/start?mode=both&pool=all_a&recent_days=30&workers=12',
+        startUrl: (() => { const sset = getScanSettings(); return `/api/scanners/wash-pattern/start?mode=both&pool=${sset.pool}&recent_days=${sset.recent_days}&workers=${sset.workers}`; })(),
         statusUrlBase: '/api/scanners/jobs/',
         btnId: 'wash-scan-btn',
         normalText: '洗盘形态扫描',
@@ -815,7 +815,7 @@ function scanWashPatterns() {
 
 function scanBreakoutBase() {
     runExternalScannerJob({
-        startUrl: '/api/scanners/wash-pattern/start?mode=breakout_base&pool=all_a&recent_days=30&workers=12',
+        startUrl: (() => { const sset = getScanSettings(); return `/api/scanners/wash-pattern/start?mode=breakout_base&pool=${sset.pool}&recent_days=${sset.recent_days}&workers=${sset.workers}`; })(),
         statusUrlBase: '/api/scanners/jobs/',
         btnId: 'breakout-scan-btn',
         normalText: '突破前蓄势',
@@ -829,7 +829,7 @@ function scanBreakoutBase() {
 
 function scanLimitDownRebound() {
     runExternalScannerJob({
-        startUrl: '/api/scanners/limit-down-rebound/start?threads=10',
+        startUrl: `/api/scanners/limit-down-rebound/start?threads=${getScanSettings().workers}`,
         statusUrlBase: '/api/scanners/jobs/',
         btnId: 'rebound-scan-btn',
         normalText: 'A股条件筛选',
@@ -1118,11 +1118,48 @@ function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName, 
             return;
         }
         const tr = e.target.closest('tr[data-code]');
+        if (tr) {
+            tbody.querySelectorAll('tr.selected').forEach((x) => x.classList.remove('selected'));
+            tr.classList.add('selected');
+        }
         const code = tr && tr.getAttribute('data-code');
         if (code) analyzeLowBuyByCode(code);
     });
 
     render();
+}
+
+// ===========================================================
+// 扫描参数设置（可调，localStorage 记忆）
+// ===========================================================
+const SCAN_SETTINGS_KEY = 'irontrader_scan_settings';
+function toggleScanSettings() {
+    const el = document.getElementById('scan-settings');
+    if (el) el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+}
+function getScanSettings() {
+    const v = (id, def) => {
+        const el = document.getElementById(id);
+        return el && el.value !== '' ? el.value : def;
+    };
+    return {
+        pool: v('set-pool', 'all_a'),
+        recent_days: v('set-recent', '30'),
+        workers: v('set-workers', '12'),
+        min_score: v('set-minscore', '55'),
+    };
+}
+function setupScanSettings() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(SCAN_SETTINGS_KEY)) || {}; } catch (e) { saved = {}; }
+    const ids = { pool: 'set-pool', recent_days: 'set-recent', workers: 'set-workers', min_score: 'set-minscore' };
+    Object.entries(ids).forEach(([k, id]) => {
+        const el = document.getElementById(id);
+        if (el && saved[k] !== undefined && saved[k] !== '') el.value = saved[k];
+        if (el) el.addEventListener('change', () => {
+            try { localStorage.setItem(SCAN_SETTINGS_KEY, JSON.stringify(getScanSettings())); } catch (e) { /* ignore */ }
+        });
+    });
 }
 
 // ===========================================================
@@ -1292,6 +1329,10 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
             <div class="itable-mount"></div>
         </div>
     `;
+    // 状态着色：已确认=绿，候选预警=黄（便于一眼区分）
+    const STATUS_CLASS = { '已确认': 'buy', '候选预警': 'watch' };
+    rows.forEach((r) => { if (!r._rowClass && r['状态']) r._rowClass = STATUS_CLASS[r['状态']] || ''; });
+
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows, exportName: title });
     persistScan('external', { title, columns, rows, count, elapsed, output, meta });
 }
@@ -1313,6 +1354,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     setupCodeAutocomplete();
+    setupScanSettings();
     updateWatchlistBtn();
     restoreLastScan();
 });

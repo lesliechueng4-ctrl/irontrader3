@@ -564,6 +564,20 @@
                     <button class="lowbuy-scan-btn scanner-rebound-btn" id="rebound-scan-btn" onclick="scanLimitDownRebound()">A股条件筛选</button>
                     <button class="lowbuy-scan-btn scanner-hero-btn" id="hero-scan-btn" onclick="scanHeroes()">🦸 逆势英雄</button>
                     <button class="lowbuy-scan-btn scanner-watchlist-btn" id="watchlist-btn" onclick="renderWatchlist()">⭐ 我的自选</button>
+                    <button class="lowbuy-scan-btn scan-settings-toggle" id="scan-settings-toggle" onclick="toggleScanSettings()">⚙ 扫描设置</button>
+                </div>
+                <div class="scan-settings" id="scan-settings" style="display:none">
+                    <label>股票池
+                        <select id="set-pool">
+                            <option value="all_a">全A</option>
+                            <option value="hs300">沪深300</option>
+                            <option value="zz500">中证500</option>
+                        </select>
+                    </label>
+                    <label>洗盘/蓄势 近<input type="number" id="set-recent" value="30" min="1" max="240">天</label>
+                    <label>并发<input type="number" id="set-workers" value="12" min="1" max="32"></label>
+                    <label>低吸最低分<input type="number" id="set-minscore" value="55" min="0" max="100"></label>
+                    <span class="scan-settings-hint">（设置即时生效，下次扫描按此参数）</span>
                 </div>
             </section>
 
