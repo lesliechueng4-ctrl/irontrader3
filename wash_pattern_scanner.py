@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 warnings.filterwarnings("ignore")
 
@@ -81,6 +81,7 @@ PROXY_ENV_KEYS = (
 )
 STRONG_MODE = "强趋势洗盘"
 LOW_REVERSAL_MODE = "低位反转洗盘"
+BREAKOUT_BASE_MODE = "突破前蓄势"
 
 
 @dataclass(frozen=True)
@@ -143,6 +144,18 @@ class ScanConfig:
     low_reversal_position_max_pct: float = 0.35
     # 企稳条件：MA5 走平或上拐（ma5[i] ≥ ma5[i-1]）
     low_reversal_require_stabilize: bool = True
+    # ── 突破前蓄势（launch base）模式 ─────────────────────
+    # 捕捉启动初期的"两阴一阳夹两阴"蓄势 base：不要求前置 impulse / 均线多头，
+    # 允许末尾阴线放量（蓄势震荡而非缩量洗盘），但要求处于上涨初段且临近突破。
+    breakout_base_min_rise_pct: float = 5.0       # 蓄势前已有的最小涨幅（确认有启动迹象）
+    breakout_base_max_rise_pct: float = 80.0      # 排除已严重过热的高位
+    breakout_base_position_lookback: int = 60
+    breakout_base_position_min_pct: float = 0.5   # 收盘处于区间中上沿（临近突破）
+    breakout_base_require_stabilize: bool = True  # MA5 走平或上拐
+    breakout_base_trailing_shrink_ratio: float = 1.6  # 末尾阴线量上限（允许温和放量震荡）
+    # 末尾缩量阴线的量比上限；None 时回退 shrink_ratio，
+    # 保持 strong / low_reversal 模式行为完全不变。
+    last_yin_shrink_ratio: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -310,12 +323,16 @@ def trend_rise_pct(df: pd.DataFrame, end_index: int, cfg: ScanConfig) -> float:
 def enabled_scan_modes(cfg: ScanConfig) -> tuple[str, ...]:
     if cfg.scan_mode == "both":
         return ("strong", "low_reversal")
+    if cfg.scan_mode == "all":
+        return ("strong", "low_reversal", "breakout_base")
     return (cfg.scan_mode,)
 
 
 def mode_label(mode: str) -> str:
     if mode == "low_reversal":
         return LOW_REVERSAL_MODE
+    if mode == "breakout_base":
+        return BREAKOUT_BASE_MODE
     return STRONG_MODE
 
 
@@ -363,6 +380,25 @@ def low_reversal_config(cfg: ScanConfig) -> ScanConfig:
         require_no_new_high=False,
         require_near_low_vol=False,
         require_impulse=False,
+    )
+
+
+def breakout_base_config(cfg: ScanConfig) -> ScanConfig:
+    """突破前蓄势模式的形态过滤配置。
+
+    放开"强趋势洗盘"中针对中段洗盘设计的过滤（前置 impulse、均线多头、
+    MA20 支撑、缩量见地量、反弹不创新高），并允许末尾阴线温和放量
+    （启动初期的蓄势震荡常见放量），其余形态约束（小实体、回撤上限、
+    不下台阶）保持不变。
+    """
+    return replace(
+        cfg,
+        require_ma_bullish=False,
+        require_ma_support=False,
+        require_no_new_high=False,
+        require_near_low_vol=False,
+        require_impulse=False,
+        last_yin_shrink_ratio=cfg.breakout_base_trailing_shrink_ratio,
     )
 
 
@@ -564,6 +600,16 @@ def shrink_mask(data: VectorScanData, now_lag: int, prev_lag: int, cfg: ScanConf
     return (vol_prev > 0) & (vol_now <= vol_prev * cfg.shrink_ratio)
 
 
+def last_yin_ratio(cfg: ScanConfig) -> float:
+    """末尾阴线缩量比率：未显式配置时回退 shrink_ratio（保持原行为）。"""
+    return cfg.shrink_ratio if cfg.last_yin_shrink_ratio is None else cfg.last_yin_shrink_ratio
+
+
+def last_yin_shrink_mask(data: VectorScanData, cfg: ScanConfig) -> np.ndarray:
+    """末根阴线相对前一根阴线的量约束，使用可配置的 last_yin_ratio。"""
+    return volume_le_mask(data, 0, 1, last_yin_ratio(cfg))
+
+
 def volume_le_mask(
     data: VectorScanData, now_lag: int, prev_lag: int, ratio: float
 ) -> np.ndarray:
@@ -674,7 +720,7 @@ def match_pattern_a_vectorized(
         & lag_bool(data.small_yin, 1)
         & shrink_mask(data, 1, 2, cfg)
         & data.small_yin
-        & shrink_mask(data, 0, 1, cfg)
+        & last_yin_shrink_mask(data, cfg)
         & (drawdown <= cfg.max_drawdown_pct)
     )
     mask &= common_pattern_filters(
@@ -703,7 +749,7 @@ def match_pattern_b_vectorized(
         & lag_bool(data.small_yin, 1)
         & shrink_mask(data, 1, 2, cfg)
         & data.small_yin
-        & shrink_mask(data, 0, 1, cfg)
+        & last_yin_shrink_mask(data, cfg)
         & (drawdown <= cfg.max_drawdown_pct)
     )
     mask &= common_pattern_filters(
@@ -770,7 +816,7 @@ def match_candidate_pattern_a_vectorized(
         & lag_bool(data.yang, 1)
         & expand_from_base_mask(data, 1, 2, 4, cfg)
         & data.small_yin
-        & shrink_mask(data, 0, 1, cfg)
+        & last_yin_shrink_mask(data, cfg)
         & (drawdown <= cfg.max_drawdown_pct)
     )
     mask &= common_pattern_filters(
@@ -800,7 +846,7 @@ def match_candidate_pattern_b_vectorized(
         & lag_bool(data.yang, 1)
         & shrink_mask(data, 1, 2, cfg)
         & data.small_yin
-        & shrink_mask(data, 0, 1, cfg)
+        & last_yin_shrink_mask(data, cfg)
         & (drawdown <= cfg.max_drawdown_pct)
     )
     mask &= common_pattern_filters(
@@ -835,6 +881,24 @@ def low_reversal_context_mask(data: VectorScanData, cfg: ScanConfig) -> np.ndarr
     return context
 
 
+def breakout_base_context_mask(data: VectorScanData, cfg: ScanConfig) -> np.ndarray:
+    """突破前蓄势上下文：上涨初段（涨幅在区间内）+ 临近突破（区间中上沿）+ MA5 企稳。"""
+    context = (
+        (data.trend_rise >= cfg.breakout_base_min_rise_pct)
+        & (data.trend_rise <= cfg.breakout_base_max_rise_pct)
+    )
+    # 位置条件：收盘处于近 lookback 区间的中上沿，排除半山腰/高位的假蓄势
+    if cfg.breakout_base_position_lookback > 0:
+        pos = low_position_array(
+            data.close, data.high, data.low, cfg.breakout_base_position_lookback
+        )
+        context &= pos >= cfg.breakout_base_position_min_pct
+    # 企稳条件：MA5 走平或上拐
+    if cfg.breakout_base_require_stabilize:
+        context &= ma5_stabilize_array(data.close)
+    return context
+
+
 def vectorized_mode_hits(
     data: VectorScanData,
     cfg: ScanConfig,
@@ -847,6 +911,9 @@ def vectorized_mode_hits(
     elif mode == "low_reversal":
         mode_cfg = low_reversal_config(cfg)
         context = low_reversal_context_mask(data, cfg)
+    elif mode == "breakout_base":
+        mode_cfg = breakout_base_config(cfg)
+        context = breakout_base_context_mask(data, cfg)
     else:
         raise ValueError(f"Unknown scan mode: {mode}")
 
@@ -2106,9 +2173,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("strong", "low_reversal", "both"),
+        choices=("strong", "low_reversal", "breakout_base", "both", "all"),
         default=ScanConfig.scan_mode,
-        help="扫描模式：strong=强趋势洗盘, low_reversal=低位反转洗盘, both=两种都扫",
+        help=(
+            "扫描模式：strong=强趋势洗盘, low_reversal=低位反转洗盘, "
+            "breakout_base=突破前蓄势, both=strong+low_reversal, all=三种都扫"
+        ),
     )
     parser.add_argument(
         "--pool",

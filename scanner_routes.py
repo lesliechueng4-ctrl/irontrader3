@@ -723,7 +723,7 @@ def _run_limit_down_rebound_scan(
 
 def _wash_pattern_params_from_request():
     return {
-        "mode": _str_param("mode", "both", ("strong", "low_reversal", "both")),
+        "mode": _str_param("mode", "both", ("strong", "low_reversal", "breakout_base", "both", "all")),
         "pool": _str_param("pool", "all_a", ("hs300", "zz500", "all_a")),
         "pool_source": _str_param("pool_source", "auto", ("auto", "sina", "akshare", "cache")),
         "max_stocks": _int_param("max_stocks", 0, 0, 6000),

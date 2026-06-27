@@ -808,7 +808,7 @@ async function runExternalScannerJob({
 
 function scanWashPatterns() {
     runExternalScannerJob({
-        startUrl: '/api/scanners/wash-pattern/start?mode=both&pool=all_a&recent_days=30&workers=12',
+        startUrl: '/api/scanners/wash-pattern/start?mode=all&pool=all_a&recent_days=30&workers=12',
         statusUrlBase: '/api/scanners/jobs/',
         btnId: 'wash-scan-btn',
         normalText: '洗盘形态扫描',
