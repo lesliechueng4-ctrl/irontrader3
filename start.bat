@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 REM ============================================================
 REM  IronTrader 3.0 统一本地启动入口（仅本机访问，不对外暴露）
-REM  双击本文件即可启动；关闭弹出的 "IronTrader-Server" 窗口即停止。
+REM  双击运行；服务在本窗口前台运行，关闭窗口或按 Ctrl+C 即停止。
 REM ============================================================
 
 REM 优先使用项目虚拟环境的 Python
@@ -23,20 +23,16 @@ echo   IronTrader 3.0  本地启动
 echo ===================================
 echo.
 
-echo [1/3] 释放 %FLASK_PORT% 端口上的旧实例（确保加载最新代码/页面）...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%FLASK_PORT%" ^| findstr LISTENING') do taskkill /F /PID %%a >nul 2>&1
+echo [1/3] 停止已在运行的旧实例（含遗留的后台进程）...
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -match 'run_background\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
-echo [2/3] 启动服务...
-start "IronTrader-Server" cmd /k ""%PY%" run_background.py"
-
-echo [3/3] 等待服务就绪并打开浏览器...
-ping 127.0.0.1 -n 5 >nul
+echo [2/3] 打开浏览器 http://localhost:%FLASK_PORT% （服务启动需几秒，若提示无法连接请稍后按 Ctrl+F5 刷新）...
 start "" "http://localhost:%FLASK_PORT%"
 
+echo [3/3] 启动服务（关闭本窗口或按 Ctrl+C 即停止）...
 echo.
-echo 启动完成！
-echo   - 本地地址: http://localhost:%FLASK_PORT%
-echo   - 停止服务: 关闭标题为 "IronTrader-Server" 的窗口
-echo   - 若页面未更新，请在浏览器按 Ctrl+F5 强制刷新
+"%PY%" run_background.py
+
 echo.
-timeout /t 4 >nul
+echo 服务已停止。
+pause
