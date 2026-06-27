@@ -1,3 +1,4 @@
+import os
 import sys
 
 
@@ -10,4 +11,7 @@ from app import app
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=False, use_reloader=False)
+    # 默认仅监听本机（本地运行）。如需局域网访问可设 FLASK_HOST=0.0.0.0。
+    host = os.getenv("FLASK_HOST", "127.0.0.1")
+    port = int(os.getenv("FLASK_PORT", "5002"))
+    app.run(host=host, port=port, debug=False, use_reloader=False)

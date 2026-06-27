@@ -9,10 +9,10 @@ runtime data out of the project root.
 Runtime entry points and modules still use flat imports, so the core source files
 remain in the root until the project is converted into a package.
 
+- `start.bat` - 统一本地启动入口（双击运行，仅监听 127.0.0.1:5002）。
 - `app.py` - Flask app entry point and remaining API routes.
 - `scanner_routes.py` - scanner blueprint for wash-pattern and limit-down rebound endpoints.
-- `run_background.py` - background Flask runner for port `5002`.
-- `run_app_watchdog.ps1` - watchdog that keeps `run_background.py` running.
+- `run_background.py` - Flask runner（被 `start.bat` 调用，host/port 取自 FLASK_HOST/FLASK_PORT）。
 - `requirements.txt` - Python dependencies.
 - `templates/` - Flask templates.
 - `static/` - frontend JavaScript and CSS.

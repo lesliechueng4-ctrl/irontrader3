@@ -2,22 +2,24 @@
 
 ## 🚀 启动应用
 
-### 开发模式
+### 本地启动（推荐）
+双击项目根目录的 **`start.bat`** 即可：
+- 自动使用 `.venv` 中的 Python
+- 仅监听 `http://localhost:5002`（本机访问，不对外暴露）
+- 释放 5002 端口上的旧实例并自动打开浏览器
+
+停止：关闭弹出的 “IronTrader-Server” 窗口。页面未更新时在浏览器按 `Ctrl+F5` 强制刷新。
+
+### 命令行启动（等价）
 ```bash
+# Windows 本地
+set FLASK_HOST=127.0.0.1 && .venv\Scripts\python.exe run_background.py
+
+# 或直接（host/port 取自 config.py / 环境变量）
 python app.py
 ```
 
-应用将在 `http://0.0.0.0:5002` 启动
-
-### 生产模式
-```bash
-# 设置环境变量
-export FLASK_DEBUG=False
-export FLASK_PORT=5002
-
-# 使用 gunicorn
-gunicorn -w 4 -b 0.0.0.0:5002 app:app
-```
+如需局域网访问，可设 `FLASK_HOST=0.0.0.0` 后再启动。
 
 ---
 
@@ -111,10 +113,10 @@ curl http://localhost:5002/api/scanners/jobs/{job_id}
 创建 `.env` 文件（可选）：
 
 ```bash
-# Flask 配置
-FLASK_HOST=0.0.0.0
+# Flask 配置（本地默认仅监听本机）
+FLASK_HOST=127.0.0.1
 FLASK_PORT=5002
-FLASK_DEBUG=True
+FLASK_DEBUG=False
 FLASK_SECRET_KEY=your-secret-key
 
 # 日志级别
@@ -222,7 +224,7 @@ curl http://localhost:5002/api/scanners/jobs/{job_id}
 
 ## 📞 支持
 
-- **项目文档**: 查看 `OPTIMIZATION_REPORT.md`
+- **项目文档**: 查看 `docs/OPTIMIZATION_REPORT.md`
 - **配置文档**: 查看 `config.py` 中的注释
 - **API 文档**: 查看各路由的 docstring
 
