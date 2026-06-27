@@ -1325,6 +1325,7 @@ body {
     color: var(--text-secondary);
 }
 .itable-recent-btn,
+.itable-export,
 .itable-reset {
     background: var(--bg-secondary);
     color: var(--text-secondary);
@@ -1336,6 +1337,7 @@ body {
     transition: all 0.15s ease;
 }
 .itable-recent-btn:hover,
+.itable-export:hover,
 .itable-reset:hover {
     color: var(--text-primary);
     border-color: var(--accent-primary);

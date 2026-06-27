@@ -605,7 +605,7 @@ function renderHeroes(result) {
             ⚠️ 操作提示：暴跌当日不追高。次日竞价"有分歧、开盘快速转一致"再参与是最科学的。
         </div>
     `;
-    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: heroes, rowCodeOf: (h) => h.code });
+    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: heroes, rowCodeOf: (h) => h.code, exportName: '逆势英雄' });
 }
 
 function renderCandidates(candidates) {
@@ -633,7 +633,7 @@ function renderCandidates(candidates) {
         <div class="candidates-count">发现 ${candidates.length} 只候选 (得分≥55)</div>
         <div class="itable-mount"></div>
     `;
-    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: candidates, rowCodeOf: (c) => c.stock_code });
+    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: candidates, rowCodeOf: (c) => c.stock_code, exportName: '低吸候选' });
 }
 
 async function runExternalScanner({ url, btnId, normalText, busyText, loadingText, title, columns, emptyText, getColumns }) {
@@ -924,7 +924,26 @@ function detectColumnType(col, rows) {
     return 'string';
 }
 
-function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf }) {
+function exportRowsToCsv(cols, rows, filename) {
+    const esc = (v) => {
+        const s = (v === null || v === undefined) ? '' : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = cols.map((c) => esc(c.label)).join(',');
+    const lines = rows.map((row) => cols.map((c) => esc(rawCellValue(row, c))).join(','));
+    const csv = '﻿' + [header, ...lines].join('\r\n'); // BOM 让 Excel 正确识别中文
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename || 'scan_results'}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName }) {
     const cols = columns.map((c) => ({ ...c, _type: detectColumnType(c, rows) }));
     const filters = {};
     let globalSearch = '';
@@ -952,6 +971,7 @@ function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf }) {
             <input type="text" class="itable-search" placeholder="🔍 全表搜索（代码 / 名称 / 任意列）">
             ${recentControls}
             <span class="itable-count"></span>
+            <button type="button" class="itable-export">⬇ 导出CSV</button>
             <button type="button" class="itable-reset">重置</button>
         </div>
         <div class="scanner-table-wrap">
@@ -1064,6 +1084,9 @@ function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf }) {
             render();
         });
     });
+    mountEl.querySelector('.itable-export').addEventListener('click', () => {
+        exportRowsToCsv(cols, visibleRows(), exportName);
+    });
     mountEl.querySelector('.itable-reset').addEventListener('click', () => {
         Object.keys(filters).forEach((k) => delete filters[k]);
         globalSearch = '';
@@ -1109,7 +1132,7 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
             <div class="itable-mount"></div>
         </div>
     `;
-    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows });
+    mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows, exportName: title });
 }
 
 function analyzeLowBuyByCode(code) {
