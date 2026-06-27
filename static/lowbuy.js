@@ -606,6 +606,7 @@ function renderHeroes(result) {
         </div>
     `;
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: heroes, rowCodeOf: (h) => h.code, exportName: '逆势英雄' });
+    persistScan('heroes', result);
 }
 
 function renderCandidates(candidates) {
@@ -634,6 +635,7 @@ function renderCandidates(candidates) {
         <div class="itable-mount"></div>
     `;
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: candidates, rowCodeOf: (c) => c.stock_code, exportName: '低吸候选' });
+    persistScan('candidates', candidates);
 }
 
 async function runExternalScanner({ url, btnId, normalText, busyText, loadingText, title, columns, emptyText, getColumns }) {
@@ -943,8 +945,11 @@ function exportRowsToCsv(cols, rows, filename) {
     URL.revokeObjectURL(url);
 }
 
-function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName }) {
+function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName, rowNameOf, onFavToggle }) {
     const cols = columns.map((c) => ({ ...c, _type: detectColumnType(c, rows) }));
+    const nameCol = cols.find((c) => /名称/.test(c.label || '') || /名称/.test(c.key || ''));
+    const nameOf = (row) => (rowNameOf ? rowNameOf(row) : (nameCol ? rawCellValue(row, nameCol) : ''));
+    const codeOf = (row) => (rowCodeOf ? rowCodeOf(row) : getScannerRowCode(row));
     const filters = {};
     let globalSearch = '';
     let sortIdx = -1;
@@ -978,10 +983,12 @@ function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName }
             <table class="candidates-table scanner-table itable">
                 <thead>
                     <tr class="itable-head-row">
+                        <th class="itable-fav" title="自选">★</th>
                         <th class="itable-idx">#</th>
                         ${cols.map((c, i) => `<th class="itable-th${(c._type === 'number' || c._type === 'date') ? ' num' : ''}" data-col="${i}" title="点击排序"><span class="itable-th-label">${escapeHtml(c.label)}</span><span class="itable-sort"></span></th>`).join('')}
                     </tr>
                     <tr class="itable-filter-row">
+                        <th></th>
                         <th></th>
                         ${cols.map((c, i) => `<th><input type="text" class="itable-filter" data-col="${i}" placeholder="${c._type === 'number' ? '如 >=5' : '筛选'}"></th>`).join('')}
                     </tr>
@@ -1047,9 +1054,13 @@ function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName }
     function render() {
         const vr = visibleRows();
         tbody.innerHTML = vr.map((row, index) => {
-            const code = rowCodeOf ? rowCodeOf(row) : getScannerRowCode(row);
+            const code = codeOf(row);
+            const name = nameOf(row);
             const rowCls = row._rowClass || '';
+            const fav = isFav(code);
+            const star = `<td class="itable-fav"><span class="fav-star${fav ? ' on' : ''}" data-code="${escapeHtml(code || '')}" data-name="${escapeHtml(name || '')}" title="加入/移出自选">${fav ? '★' : '☆'}</span></td>`;
             return `<tr class="candidate-row ${rowCls}" data-code="${escapeHtml(code || '')}">
+                ${star}
                 <td>${index + 1}</td>
                 ${cols.map((c) => `<td${c.className ? ` class="${c.className}"` : ''}>${cellHtml(row, c)}</td>`).join('')}
             </tr>`;
@@ -1097,12 +1108,161 @@ function mountInteractiveTable(mountEl, { columns, rows, rowCodeOf, exportName }
     });
 
     tbody.addEventListener('click', (e) => {
+        const star = e.target.closest('.fav-star');
+        if (star) {
+            e.stopPropagation();
+            const nowFav = toggleFav(star.dataset.code, star.dataset.name);
+            star.textContent = nowFav ? '★' : '☆';
+            star.classList.toggle('on', nowFav);
+            if (typeof onFavToggle === 'function') onFavToggle();
+            return;
+        }
         const tr = e.target.closest('tr[data-code]');
         const code = tr && tr.getAttribute('data-code');
         if (code) analyzeLowBuyByCode(code);
     });
 
     render();
+}
+
+// ===========================================================
+// 自选清单（localStorage，跨扫描/刷新保留）
+// ===========================================================
+const WATCHLIST_KEY = 'irontrader_watchlist';
+function getWatchlist() {
+    try { return JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {}; } catch (e) { return {}; }
+}
+function saveWatchlist(w) {
+    try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(w)); } catch (e) { /* ignore quota */ }
+    updateWatchlistBtn();
+}
+function isFav(code) { return !!getWatchlist()[code]; }
+function toggleFav(code, name) {
+    if (!code) return false;
+    const w = getWatchlist();
+    if (w[code]) delete w[code]; else w[code] = name || code;
+    saveWatchlist(w);
+    return !!w[code];
+}
+function updateWatchlistBtn() {
+    const b = document.getElementById('watchlist-btn');
+    if (b) b.textContent = `⭐ 我的自选 (${Object.keys(getWatchlist()).length})`;
+}
+function renderWatchlist() {
+    const panel = document.getElementById('candidates-panel');
+    const wl = getWatchlist();
+    const rows = Object.entries(wl).map(([code, name]) => ({ code, name }));
+    if (!rows.length) {
+        panel.innerHTML = '<div class="candidates-count">⭐ 我的自选</div><div class="empty-msg">还没有自选股。在任意扫描结果里点 ☆ 即可加入。</div>';
+        return;
+    }
+    const columns = [
+        { label: '代码', className: 'code-cell', type: 'string', value: (r) => r.code },
+        { label: '名称', value: (r) => r.name },
+    ];
+    panel.innerHTML = `<div class="candidates-count">⭐ 我的自选（${rows.length}）— 点 ★ 可移出</div><div class="itable-mount"></div>`;
+    mountInteractiveTable(panel.querySelector('.itable-mount'), {
+        columns, rows, rowCodeOf: (r) => r.code, rowNameOf: (r) => r.name,
+        exportName: '我的自选', onFavToggle: renderWatchlist,
+    });
+}
+
+// ===========================================================
+// 记住上次扫描结果（localStorage，刷新后仍在）
+// ===========================================================
+let _restoringScan = false;
+function persistScan(kind, payload) {
+    if (_restoringScan) return;
+    try { localStorage.setItem('irontrader_last_scan', JSON.stringify({ kind, payload, ts: Date.now() })); } catch (e) { /* ignore */ }
+}
+function timeAgo(ts) {
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return `${s}秒前`;
+    if (s < 3600) return `${Math.floor(s / 60)}分钟前`;
+    if (s < 86400) return `${Math.floor(s / 3600)}小时前`;
+    return `${Math.floor(s / 86400)}天前`;
+}
+function restoreLastScan() {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem('irontrader_last_scan')); } catch (e) { return; }
+    if (!saved || !saved.kind) return;
+    const panel = document.getElementById('candidates-panel');
+    if (!panel || panel.children.length) return; // 已有内容则不覆盖
+    _restoringScan = true;
+    try {
+        if (saved.kind === 'external') renderExternalScannerResults({ emptyText: '无结果', ...saved.payload });
+        else if (saved.kind === 'heroes') renderHeroes(saved.payload);
+        else if (saved.kind === 'candidates') renderCandidates(saved.payload || []);
+        else return;
+        const note = document.createElement('div');
+        note.className = 'restored-note';
+        note.innerHTML = `↩ 已恢复上次扫描结果（${timeAgo(saved.ts)}）· <span class="restored-clear">清除</span>`;
+        panel.insertBefore(note, panel.firstChild);
+        note.querySelector('.restored-clear').addEventListener('click', () => {
+            localStorage.removeItem('irontrader_last_scan');
+            panel.innerHTML = '';
+        });
+    } finally { _restoringScan = false; }
+}
+
+// ===========================================================
+// 股票代码输入框自动补全（接 /api/search）
+// ===========================================================
+function setupCodeAutocomplete() {
+    const input = document.getElementById('lowbuy-code-input');
+    if (!input) return;
+    const container = input.closest('.lowbuy-search') || input.parentElement;
+    container.style.position = 'relative';
+    const box = document.createElement('div');
+    box.className = 'code-suggest';
+    box.style.display = 'none';
+    container.appendChild(box);
+
+    let timer = null;
+    let items = [];
+    let active = -1;
+
+    function hide() { box.style.display = 'none'; active = -1; }
+    function place() {
+        box.style.left = `${input.offsetLeft}px`;
+        box.style.top = `${input.offsetTop + input.offsetHeight + 2}px`;
+        box.style.width = `${input.offsetWidth}px`;
+    }
+    function show(list) {
+        items = list;
+        if (!list.length) { hide(); return; }
+        box.innerHTML = list.map((it) => `<div class="cs-item" data-code="${escapeHtml(it.code)}"><span class="cs-code">${escapeHtml(it.code)}</span><span class="cs-name">${escapeHtml(it.name)}</span></div>`).join('');
+        place();
+        box.style.display = 'block';
+        active = -1;
+    }
+    async function query(q) {
+        try {
+            const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            const j = await r.json();
+            if (j.success) show((j.data || []).slice(0, 10)); else hide();
+        } catch (e) { hide(); }
+    }
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim();
+        clearTimeout(timer);
+        if (q.length < 1) { hide(); return; }
+        timer = setTimeout(() => query(q), 250);
+    });
+    box.addEventListener('mousedown', (e) => {
+        const it = e.target.closest('.cs-item');
+        if (it) { input.value = it.dataset.code; hide(); analyzeLowBuy(); }
+    });
+    input.addEventListener('blur', () => setTimeout(hide, 150));
+    input.addEventListener('keydown', (e) => {
+        if (box.style.display === 'none') return;
+        if (e.key === 'ArrowDown') { active = Math.min(active + 1, items.length - 1); e.preventDefault(); }
+        else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); e.preventDefault(); }
+        else if (e.key === 'Enter') { if (active >= 0 && items[active]) input.value = items[active].code; hide(); return; }
+        else return;
+        [...box.children].forEach((c, i) => c.classList.toggle('active', i === active));
+    });
 }
 
 function renderExternalScannerResults({ title, columns, rows, count, elapsed, output, meta, emptyText }) {
@@ -1133,6 +1293,7 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
         </div>
     `;
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows, exportName: title });
+    persistScan('external', { title, columns, rows, count, elapsed, output, meta });
 }
 
 function analyzeLowBuyByCode(code) {
@@ -1151,4 +1312,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.key === 'Enter') analyzeLowBuy();
         });
     }
+    setupCodeAutocomplete();
+    updateWatchlistBtn();
+    restoreLastScan();
 });

@@ -1393,6 +1393,69 @@ body {
 .itable-filter:focus { border-color: var(--accent-primary); }
 .itable-idx { width: 42px; }
 
+/* 自选星标列 */
+.itable-fav { width: 34px; text-align: center; color: var(--text-muted); }
+.fav-star {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 1rem;
+    transition: color 0.15s ease, transform 0.1s ease;
+}
+.fav-star:hover { transform: scale(1.25); }
+.fav-star.on { color: #f5c518; }
+
+/* 自选按钮 */
+.lowbuy-scan-btn.scanner-watchlist-btn {
+    background: linear-gradient(135deg, #f59e0b, #f5c518);
+    box-shadow: 0 4px 16px rgba(245, 197, 24, 0.28);
+    color: #1a1a1a;
+}
+
+/* 上次结果恢复提示 */
+.restored-note {
+    margin: 0 0 10px;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+.restored-clear {
+    cursor: pointer;
+    color: var(--accent-primary);
+    text-decoration: underline;
+}
+
+/* 代码输入自动补全下拉 */
+.code-suggest {
+    position: absolute;
+    z-index: 50;
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.cs-item {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+.cs-item:hover,
+.cs-item.active { background: var(--bg-card-hover); }
+.cs-code {
+    font-family: 'Courier New', monospace;
+    color: var(--accent-primary);
+    font-weight: 600;
+    min-width: 60px;
+}
+.cs-name { color: var(--text-secondary); }
+
 /* --- Loading / Error / Empty --- */
 .loading-spinner {
     text-align: center;
