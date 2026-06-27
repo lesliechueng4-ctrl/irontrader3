@@ -806,9 +806,24 @@ async function runExternalScannerJob({
     }
 }
 
+// 洗盘形态扫描结果表格列（强趋势/低位反转/突破前蓄势共用）
+const WASH_PATTERN_COLUMNS = [
+    { key: '代码', label: '代码', className: 'code-cell', isCode: true },
+    { key: '名称', label: '名称' },
+    { key: '状态', label: '状态' },
+    { key: '扫描模式', label: '模式' },
+    { key: '洗盘结束日', label: '结束日' },
+    { key: '距今(天)', label: '距今' },
+    { key: '模式', label: '形态' },
+    { key: '后续涨幅%', label: '后续%' },
+    { key: '洗盘回撤%', label: '回撤%' },
+    { key: '距MA20%', label: '距MA20%' },
+    { key: '备注', label: '备注', className: 'note-cell' },
+];
+
 function scanWashPatterns() {
     runExternalScannerJob({
-        startUrl: '/api/scanners/wash-pattern/start?mode=all&pool=all_a&recent_days=30&workers=12',
+        startUrl: '/api/scanners/wash-pattern/start?mode=both&pool=all_a&recent_days=30&workers=12',
         statusUrlBase: '/api/scanners/jobs/',
         btnId: 'wash-scan-btn',
         normalText: '洗盘形态扫描',
@@ -816,19 +831,21 @@ function scanWashPatterns() {
         loadingText: '正在启动洗盘形态扫描...',
         title: '洗盘形态扫描',
         emptyText: '未发现符合条件的洗盘形态',
-        columns: [
-            { key: '代码', label: '代码', className: 'code-cell', isCode: true },
-            { key: '名称', label: '名称' },
-            { key: '状态', label: '状态' },
-            { key: '扫描模式', label: '模式' },
-            { key: '洗盘结束日', label: '结束日' },
-            { key: '距今(天)', label: '距今' },
-            { key: '模式', label: '形态' },
-            { key: '后续涨幅%', label: '后续%' },
-            { key: '洗盘回撤%', label: '回撤%' },
-            { key: '距MA20%', label: '距MA20%' },
-            { key: '备注', label: '备注', className: 'note-cell' },
-        ],
+        columns: WASH_PATTERN_COLUMNS,
+    });
+}
+
+function scanBreakoutBase() {
+    runExternalScannerJob({
+        startUrl: '/api/scanners/wash-pattern/start?mode=breakout_base&pool=all_a&recent_days=30&workers=12',
+        statusUrlBase: '/api/scanners/jobs/',
+        btnId: 'breakout-scan-btn',
+        normalText: '突破前蓄势',
+        busyText: '蓄势扫描中...',
+        loadingText: '正在启动突破前蓄势扫描...',
+        title: '突破前蓄势（启动初期两阴一阳夹两阴）',
+        emptyText: '未发现符合条件的突破前蓄势形态',
+        columns: WASH_PATTERN_COLUMNS,
     });
 }
 

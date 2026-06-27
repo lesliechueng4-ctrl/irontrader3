@@ -773,6 +773,11 @@ body {
     box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
 }
 
+.lowbuy-scan-btn.scanner-breakout-btn {
+    background: linear-gradient(135deg, #a855f7, #db2777);
+    box-shadow: 0 4px 16px rgba(168, 85, 247, 0.28);
+}
+
 .lowbuy-scan-btn:disabled {
     opacity: 0.62;
     cursor: not-allowed;
