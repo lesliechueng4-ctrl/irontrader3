@@ -23,6 +23,18 @@ logger = get_logger(__name__)
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.config.from_object(FlaskConfig)
 
+# 静态资源长缓存（JS/CSS 均带 ?v=版本号，更新时改版本即可，浏览器/手机可放心缓存 7 天）
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 7 * 24 * 3600
+
+# 启用 gzip 压缩（如果已安装 flask-compress）：
+# lowbuy.js(~66KB)+styles.css(~39KB) 等文本资源压缩后约缩小 70%，显著加快手机/弱网首屏。
+try:
+    from flask_compress import Compress
+    Compress(app)
+    logger.info("Gzip compression enabled (flask-compress)")
+except ImportError:
+    logger.warning("flask-compress 未安装，未启用 gzip 压缩。安装: pip install flask-compress")
+
 # 注册全局异常处理器
 register_error_handlers(app)
 

@@ -8,6 +8,7 @@
 # Core Web Framework
 Flask>=3.0.0
 Flask-CORS>=4.0.0          # optional but recommended; enables CORS on /api/*
+Flask-Compress>=1.14       # optional; gzip responses (faster mobile/weak-network load)
 waitress>=3.0.0           # production WSGI server (used by run_background.py)
 
 # Data Processing
