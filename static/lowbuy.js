@@ -102,6 +102,25 @@ function renderMoodCard(sentiment, emotion) {
     </div>`;
 }
 
+// 迷你走势图：用一段收盘价序列画内联 SVG 折线（无需任何图表库）
+function sparkline(vals) {
+    if (!Array.isArray(vals) || vals.length < 2) return '<span class="eg-spark-empty"></span>';
+    const w = 60, h = 18, pad = 2;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const range = (max - min) || 1;
+    const n = vals.length;
+    const X = (i) => pad + (i / (n - 1)) * (w - 2 * pad);
+    const Y = (v) => pad + (1 - (v - min) / range) * (h - 2 * pad);
+    const d = vals.map((v, i) => `${i === 0 ? 'M' : 'L'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
+    const up = vals[vals.length - 1] >= vals[0];
+    const color = up ? '#ff8a80' : '#69f0ae';   // A股红涨绿跌
+    const last = `${X(n - 1).toFixed(1)},${Y(vals[n - 1]).toFixed(1)}`;
+    return `<svg class="eg-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+        <path d="${d}" fill="none" stroke="${color}" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="${last.split(',')[0]}" cy="${last.split(',')[1]}" r="1.6" fill="${color}"/>
+    </svg>`;
+}
+
 // 逐票对比明细：昨日涨停股今日怎么走 + 龙头今日表现
 function buildEmotionDetail(dims) {
     const prev = dims.prev_limitup_return || {};
@@ -114,11 +133,14 @@ function buildEmotionDetail(dims) {
     };
     const list = (arr) => (arr && arr.length) ? arr.map(stockRow).join('') : '<span class="eg-empty">—</span>';
 
-    // 龙头行：额外展示 昨日单日 + 近10日累计（入选依据）
+    // 龙头行：额外展示 昨日单日 + 近10日累计（入选依据）+ 迷你走势
     const fmt = (v) => (v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%');
     const cls = (v) => (v == null ? '' : (v >= 0 ? 'up' : 'down'));
-    const leaderRow = (s) => `<span class="eg-stock eg-leader ${s.change >= 0 ? 'up' : 'down'}" onclick="analyzeLowBuyByCode('${s.code}')" title="点击分析">
-        <span class="eg-st-name">${s.name || s.code}</span>
+    const leaderRow = (s) => `<span class="eg-stock eg-leader ${s.change >= 0 ? 'up' : 'down'}" onclick="analyzeLowBuyByCode('${s.code}')" title="点击分析 ${s.name || s.code}（近${(s.spark || []).length - 1}日走势）">
+        <span class="eg-leader-top">
+            <span class="eg-st-name">${s.name || s.code}</span>
+            ${sparkline(s.spark)}
+        </span>
         <span class="eg-st-chg">今${(s.change >= 0 ? '+' : '') + (s.change != null ? s.change.toFixed(2) : '--')}%</span>
         <span class="eg-st-sub">昨<i class="${cls(s.prev_change)}">${fmt(s.prev_change)}</i> · 近10日<i class="${cls(s.recent_return)}">${fmt(s.recent_return)}</i></span>
     </span>`;

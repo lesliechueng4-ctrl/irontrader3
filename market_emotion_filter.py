@@ -302,7 +302,10 @@ class MarketEmotionFilter:
                 if a > 0:
                     prev_change = (b - a) / a * 100.0
 
-            return {"recent_return": recent_return, "prev_change": prev_change}
+            # 近 lookback+1 根收盘价序列，供前端画迷你走势(sparkline)
+            spark = [round(float(x), 2) for x in closes.iloc[-(lookback + 1):].tolist()]
+
+            return {"recent_return": recent_return, "prev_change": prev_change, "spark": spark}
         except Exception:
             return None
 
@@ -444,6 +447,7 @@ class MarketEmotionFilter:
                     "change": round(float(r["_chg"]), 2),          # 今日
                     "prev_change": _round(m.get("prev_change")),    # 昨日
                     "recent_return": _round(m.get("recent_return")),# 近N日累计
+                    "spark": m.get("spark") or [],                  # 近N日收盘序列(迷你走势)
                     "blown": bool(r["_chg"] <= cfg.big_loss_pct),
                 })
             result.update(
