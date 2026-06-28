@@ -132,6 +132,25 @@ def market_state():
     result = decision_maker.risk_engine.get_market_state()
     return jsonify({'success': True, 'data': result})
 
+# 市场情绪过滤器（懒加载单例，复用全局 DataFetcher）
+_emotion_filter = None
+_EMOTION_FILTER_LOCK = Lock()
+
+def _get_emotion_filter():
+    global _emotion_filter
+    if _emotion_filter is None:
+        with _EMOTION_FILTER_LOCK:
+            if _emotion_filter is None:
+                from market_emotion_filter import MarketEmotionFilter
+                _emotion_filter = MarketEmotionFilter(data_fetcher)
+    return _emotion_filter
+
+@app.route('/api/market-emotion')
+def market_emotion():
+    """全局市场情绪得分 + 仓位指令（开仓权限/仓位上限）"""
+    result = _get_emotion_filter().calculate_emotion_score()
+    return jsonify({'success': True, 'data': result})
+
 @app.route('/api/stock/<code>')
 def stock_analysis(code):
     """Analyze single stock"""
