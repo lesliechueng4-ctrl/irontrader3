@@ -11,7 +11,71 @@ let isScanning = false;
 // ========== 初始化 ==========
 function initLowBuy() {
     loadSentiment();
+    loadDragonLadder();
     loadSectors();
+}
+
+// ========== 题材龙头梯队 ==========
+async function loadDragonLadder() {
+    const el = document.getElementById('ladder-panel');
+    if (!el) return;
+    el.innerHTML = '<div class="loading-spinner">加载龙头梯队...</div>';
+    try {
+        const resp = await fetch('/api/dragon-ladder');
+        const json = await resp.json();
+        if (json.success) {
+            renderDragonLadder(json.data);
+        } else {
+            el.innerHTML = `<div class="error-msg">梯队加载失败: ${json.error}</div>`;
+        }
+    } catch (e) {
+        el.innerHTML = `<div class="error-msg">梯队网络错误: ${e.message}</div>`;
+    }
+}
+
+function renderDragonLadder(data) {
+    const el = document.getElementById('ladder-panel');
+    const sp = data.spirit || {};
+    const pr = sp.promotion_rate;
+    const prTxt = (pr == null) ? 'N/A' : Math.round(pr * 100) + '%';
+    const sectors = data.sectors || [];
+
+    const chip = (s) => {
+        const divCls = s.divergence === '分歧' ? 'div' : (s.divergence === '一致' ? 'con' : 'neu');
+        const crown = s.role === '龙头' ? '<span class="ld-crown">👑</span>' : '';
+        const buy = s.buy_hint ? '<span class="ld-buy" title="连板分歧、封单仍强：留意弱转强接力买点">★买点</span>' : '';
+        return `<span class="ld-chip ${divCls} ${s.role === '龙头' ? 'lead' : ''}" onclick="analyzeLowBuyByCode('${s.code}')"
+            title="${s.name} ${s.limit_count}板 · 换手${s.turnover_rate}% · ${s.divergence}（${s.div_reason || ''}）点击分析">
+            ${crown}<span class="ld-role">${s.role}</span><span class="ld-name">${s.name}</span><span class="ld-lc">${s.limit_count}板</span>${buy}</span>`;
+    };
+
+    const sectorBlock = (sec) => `
+        <div class="ld-sector">
+            <div class="ld-sector-head">
+                <span class="ld-sector-name">${sec.sector}</span>
+                <span class="ld-sector-meta">最高 <b>${sec.max_height}</b> 板 · ${sec.count}只${sec.has_gap ? ' <span class="ld-gap">断层</span>' : ''}</span>
+            </div>
+            <div class="ld-stocks">${sec.stocks.map(chip).join('')}</div>
+        </div>`;
+
+    const warnHtml = data.sell_warning
+        ? `<div class="ld-sell-warn">⚠️ 卖在一致预警：${data.sell_warning}</div>` : '';
+
+    el.innerHTML = `
+    <div class="ld-card">
+        <div class="ld-header">
+            <div class="ld-title">🐉 题材龙头梯队</div>
+            <div class="ld-spirit">
+                <span>空间高度 <b>${sp.max_height || 0}</b> 板</span>
+                <span title="昨日涨停股今日仍涨停的比例，赚钱效应/晋级率">晋级率 <b class="${(pr != null && pr >= 0.5) ? 'up' : 'down'}">${prTxt}</b></span>
+                <span>涨停 <b>${sp.limit_up_total || 0}</b> · 题材 ${sp.sector_count || 0}</span>
+                <span class="ld-dc">一致 <b class="con">${sp.consensus_count || 0}</b> / 分歧 <b class="div">${sp.divergent_count || 0}</b> / 买点 <b class="buy">${sp.buy_hint_count || 0}</b></span>
+            </div>
+        </div>
+        ${warnHtml}
+        <div class="ld-sectors">${sectors.slice(0, 15).map(sectorBlock).join('') || '<div class="eg-empty">暂无涨停数据</div>'}</div>
+        <div class="ld-legend">👑龙头 · <span class="ld-k div">分歧</span>(关注买点) · <span class="ld-k con">一致</span>(缩量不追) · ★弱转强买点 · 断层=龙头与龙二高度差≥2</div>
+    </div>`;
 }
 
 // ========== 市场情绪（统一卡片：情绪闸为主 + 老情绪指标作数据行）==========

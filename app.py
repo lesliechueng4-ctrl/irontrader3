@@ -161,6 +161,25 @@ def market_emotion():
     result = _get_emotion_filter().calculate_emotion_score()
     return jsonify({'success': True, 'data': result})
 
+# 题材龙头梯队（懒加载单例，复用全局 DataFetcher）
+_dragon_ladder = None
+_DRAGON_LADDER_LOCK = Lock()
+
+def _get_dragon_ladder():
+    global _dragon_ladder
+    if _dragon_ladder is None:
+        with _DRAGON_LADDER_LOCK:
+            if _dragon_ladder is None:
+                from dragon_ladder import DragonLadder
+                _dragon_ladder = DragonLadder(data_fetcher)
+    return _dragon_ladder
+
+@app.route('/api/dragon-ladder')
+def dragon_ladder():
+    """题材龙头梯队：选最强龙头 + 分歧/一致 + 晋级率/空间高度 + 卖在一致预警"""
+    result = _get_dragon_ladder().build()
+    return jsonify({'success': True, 'data': result})
+
 @app.route('/api/stock/<code>')
 def stock_analysis(code):
     """Analyze single stock"""
