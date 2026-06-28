@@ -86,9 +86,6 @@ class EmotionConfig:
     leader_pool_cache_ttl: int = 1800    # 龙头池成员（近期涨幅前N，盘中基本稳定）
     result_cache_ttl: int = 180          # 综合情绪结果整体缓存（避免每次请求都重新取数）
 
-    # ---- 明细展示条数 ----
-    detail_top_n: int = 10               # 昨日涨停今日表现：各取涨/跌前 N 条
-
     # ---- 情绪等级阈值 ----
     level_high: int = 80     # >= 高潮
     level_diverge: int = 60  # >= 分歧
@@ -555,20 +552,21 @@ class MarketEmotionFilter:
             }
             for d in dims
         }
-        # 附加逐票对比明细，让用户看到“昨天的票今天怎么走的”，而不只是一个分数
-        n = self.config.detail_top_n
-        items = prev["items"]
+        # 附加逐票对比明细：完整列出昨日涨停股今日的全部上涨/下跌票，让用户看到全貌
+        items = prev["items"]                          # 已按今日涨跌幅降序
+        gainers = [it for it in items if it["change"] > 0]
+        losers = [it for it in items if it["change"] < 0][::-1]   # 反转→跌幅最深在前
         dimensions["prev_limitup_return"].update({
             "count": prev["count"],
             "up_count": prev["up_count"],
             "down_count": prev["down_count"],
-            "top_gainers": items[:n],          # 今日涨幅最高的（接力成功）
-            "top_losers": items[-n:][::-1] if len(items) > n else items[::-1][:n],  # 今日跌幅最深的（高位杀跌）
+            "top_gainers": gainers,            # 今日全部上涨票（接力成功）
+            "top_losers": losers,              # 今日全部下跌票（高位杀跌）
         })
         dimensions["leader_blowup_rate"].update({
             "total": blowup.get("total", 0),
             "blown": blowup.get("blown", 0),
-            "items": blowup.get("items", [])[:n],   # 龙头今日表现（已按跌幅升序，最惨在前）
+            "items": blowup.get("items", []),  # 龙头池全部成员今日表现（按跌幅升序，最惨在前）
         })
 
         result = {

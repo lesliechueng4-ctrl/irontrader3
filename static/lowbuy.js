@@ -108,8 +108,8 @@ function buildEmotionDetail(dims) {
         <details class="eg-detail">
             <summary>昨日涨停 ${prev.count} 只 · 今日 <b class="up">${prev.up_count}涨</b> / <b class="down">${prev.down_count}跌</b>（点开看对比）</summary>
             <div class="eg-detail-body">
-                <div class="eg-group"><div class="eg-group-t up">🔥 接力领涨</div><div class="eg-stocks">${list(prev.top_gainers)}</div></div>
-                <div class="eg-group"><div class="eg-group-t down">❄️ 高位杀跌</div><div class="eg-stocks">${list(prev.top_losers)}</div></div>
+                <div class="eg-group"><div class="eg-group-t up">🔥 今日上涨 (${(prev.top_gainers || []).length})</div><div class="eg-stocks">${list(prev.top_gainers)}</div></div>
+                <div class="eg-group"><div class="eg-group-t down">❄️ 今日下跌 (${(prev.top_losers || []).length})</div><div class="eg-stocks">${list(prev.top_losers)}</div></div>
             </div>
         </details>`;
     }
