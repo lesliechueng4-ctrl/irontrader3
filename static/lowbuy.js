@@ -186,16 +186,32 @@ function buildDragonCard(data) {
     const stars = '⭐'.repeat(Math.max(0, Math.min(5, dragon.confidence || 0)));
     const reason = (dragon.reason || '').replace(/\n/g, '<br>');
 
+    // 情绪闸：单票上限是情绪区间的全局属性，龙头无 gate(IGNORE 路径)时回退用低吸的
+    const eg = dragon.emotion_gate || data.lowbuy?.emotion_gate;
+    const egHtml = buildEmotionGateChip(eg);
+
     return `
         <div class="lowbuy-section" style="border-left:4px solid ${style.color};padding:12px 16px;margin-bottom:12px;background:rgba(255,255,255,0.04);border-radius:8px;">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                 <strong style="color:${style.color};font-size:1.05rem;">${style.icon} 龙头战法: ${style.label}</strong>
                 <span style="color:#ccc;">信心 ${stars} (${dragon.confidence || 0}/5)</span>
                 ${stateBadge}
+                ${egHtml}
             </div>
             <div style="color:#bbb;margin-top:6px;font-size:0.85rem;">${reason}</div>
             ${warnHtml}
         </div>`;
+}
+
+// 情绪闸小标签：展示"当前情绪允许的单票仓位上限"（+ 是否因情绪被降级）
+function buildEmotionGateChip(eg) {
+    if (!eg) return '';
+    const levelColors = { '高潮': '#43a047', '分歧': '#fb8c00', '退潮': '#e53935', '冰点': '#3949ab' };
+    const color = levelColors[eg.emotion_level] || '#90a4ae';
+    const capPct = Math.round((eg.max_single_position || 0) * 100);
+    const gatedTip = eg.gated ? ' · 情绪降级' : '';
+    const title = `市场情绪【${eg.emotion_level || ''}】得分${eg.emotion_score ?? ''}：单票仓位建议 ≤ ${capPct}%${eg.can_open ? '' : '（禁止开仓）'}`;
+    return `<span class="dragon-eg" title="${title}" style="background:${color}1f;border:1px solid ${color};color:#fff;border-radius:999px;padding:2px 10px;font-size:0.78rem;">🚦 单票≤${capPct}%${gatedTip}</span>`;
 }
 
 function renderAnalysis(data) {
