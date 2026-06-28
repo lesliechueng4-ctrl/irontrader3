@@ -14,6 +14,9 @@ from sector_flow_scorer import SectorFlowScorer
 from stock_fund_analyzer import StockFundAnalyzer
 from technical_scorer import TechnicalScorer
 from fundamental_scorer import FundamentalScorer
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class LowBuyEngine:
@@ -55,6 +58,30 @@ class LowBuyEngine:
         self._cached_sentiment = None
         self._sentiment_cached_at = 0.0
         self.SENTIMENT_CACHE_TTL = 300  # 秒
+
+        # 全局情绪闸（懒加载，复用同一 DataFetcher；结果带 TTL 缓存，批量分析时只算一次）
+        self._emotion_filter = None
+        self._cached_emotion = None
+        self._emotion_cached_at = 0.0
+        self.EMOTION_CACHE_TTL = 300  # 秒
+        # 各决策意图的基准单票仓位（再由情绪单票上限裁剪）
+        self.INTENDED_SINGLE = {'低吸': 0.20, '观察': 0.10}
+
+    def _get_emotion(self) -> dict:
+        """获取全局情绪过滤结果（5 分钟内复用缓存）。任何异常都降级为 None，不影响主流程。"""
+        now = time.time()
+        if self._cached_emotion is not None and (now - self._emotion_cached_at) < self.EMOTION_CACHE_TTL:
+            return self._cached_emotion
+        try:
+            if self._emotion_filter is None:
+                from market_emotion_filter import MarketEmotionFilter
+                self._emotion_filter = MarketEmotionFilter(self.fetcher)
+            self._cached_emotion = self._emotion_filter.calculate_emotion_score()
+            self._emotion_cached_at = now
+        except Exception as e:
+            logger.warning(f"情绪闸计算失败，跳过仓位约束: {e}")
+            self._cached_emotion = None
+        return self._cached_emotion
 
     def _get_sentiment(self) -> dict:
         """获取市场情绪（5 分钟内复用缓存，过期自动刷新）"""
@@ -150,6 +177,23 @@ class LowBuyEngine:
         else:
             decision = '回避'
 
+        # === 全局情绪闸：用 cap_position 实际约束开仓 ===
+        # 冰点期(禁止开仓)将"低吸"信号强制下调为"回避"；其余区间按情绪裁剪单票仓位上限。
+        emotion_gate = None
+        emotion = self._get_emotion()
+        if emotion:
+            from market_emotion_filter import PositionManager
+            intended = self.INTENDED_SINGLE.get(decision, 0.0)
+            gate = PositionManager.gate(
+                score=emotion['score'],
+                intended_single=intended,
+                is_open_signal=(decision == '低吸'),
+                downgrade_to='回避',
+            )
+            if gate['gated']:
+                decision = gate['final_signal']  # 冰点 → 回避
+            emotion_gate = gate
+
         # 构建维度详情
         dimensions = {
             'sentiment': {
@@ -208,6 +252,7 @@ class LowBuyEngine:
             'decision': decision,
             'veto_triggered': veto,
             'veto_reason': veto_reason,
+            'emotion_gate': emotion_gate,   # 全局情绪闸：仓位上限/是否被下调（None 表示情绪数据不可用）
             'dimensions': dimensions,
             'data_source_health': self.fetcher.get_data_source_health(),
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),

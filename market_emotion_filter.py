@@ -563,6 +563,42 @@ class PositionManager:
         band = cls.get_band(score)
         return round(max(0.0, min(intended_fraction, band.max_single_position)), 4)
 
+    @classmethod
+    def gate(cls, score: float, intended_single: float, is_open_signal: bool,
+             downgrade_to: str) -> Dict[str, object]:
+        """情绪闸：对一个"开仓信号"按当前市场情绪做实际约束。
+
+        Args:
+            score: 综合情绪得分(0~100)
+            intended_single: 该信号原本意图的单票仓位比例(0~1)
+            is_open_signal: 原决策是否为"开仓/买入"类信号
+            downgrade_to: 冰点(禁止开仓)时，开仓信号应被下调到的目标决策值
+                          （各引擎决策词不同，由调用方传入，如 '回避' / 'IGNORE'）
+
+        Returns: {
+            'emotion_score', 'emotion_level',
+            'max_single_position',          # 当前情绪允许的单票上限
+            'capped_single_position',       # intended 经上限裁剪后的实际值
+            'can_open',                     # 当前情绪是否允许开仓
+            'gated',                        # 信号是否因情绪被强制下调
+            'final_signal',                 # 被下调后的目标决策（未下调则为 None）
+            'note',
+        }
+        """
+        band = cls.get_band(score)
+        capped = cls.cap_position(score, intended_single)
+        gated = bool(is_open_signal and band.max_total_position <= 0)
+        return {
+            'emotion_score': int(_clamp(float(score))),
+            'emotion_level': band.level,
+            'max_single_position': band.max_single_position,
+            'capped_single_position': capped,
+            'can_open': band.max_total_position > 0,
+            'gated': gated,
+            'final_signal': downgrade_to if gated else None,
+            'note': band.note,
+        }
+
 
 # ==========================================================================
 # 命令行自检 / 演示

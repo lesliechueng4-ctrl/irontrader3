@@ -679,6 +679,80 @@ body {
     gap: 0.75rem;
 }
 
+/* ===== 全局情绪闸（仓位指令）===== */
+.emotion-gate-bar {
+    margin-top: 0.9rem;
+}
+.emotion-gate-loading {
+    font-size: 0.85rem;
+    color: rgba(255,255,255,0.7);
+}
+.emotion-gate {
+    background: rgba(0,0,0,0.28);
+    border-left: 4px solid var(--eg-color, #90a4ae);
+    border-radius: 10px;
+    padding: 0.7rem 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+.emotion-gate .eg-main {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+.emotion-gate .eg-tag {
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.5px;
+}
+.emotion-gate .eg-score {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1;
+}
+.emotion-gate .eg-score small {
+    font-size: 0.8rem;
+    font-weight: 500;
+    margin-left: 1px;
+}
+.emotion-gate .eg-level {
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.8rem;
+    padding: 2px 10px;
+    border-radius: 999px;
+}
+.emotion-gate .eg-action {
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+.emotion-gate .eg-caps {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    font-size: 0.85rem;
+    color: rgba(255,255,255,0.92);
+}
+.emotion-gate .eg-caps b { color: #fff; }
+.emotion-gate .eg-open {
+    margin-left: auto;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+.emotion-gate .eg-open.ok { background: rgba(67,160,71,0.35); color: #b9f6ca; }
+.emotion-gate .eg-open.no { background: rgba(229,57,53,0.35); color: #ffcdd2; }
+.emotion-gate .eg-dims {
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.72);
+}
+.emotion-gate .eg-conf { color: #ffcc80; }
+
 .metric {
     text-align: center;
     background: rgba(255,255,255,0.1);

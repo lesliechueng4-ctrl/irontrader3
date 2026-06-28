@@ -3,12 +3,16 @@ IronTrader Decision Maker Enhanced
 增强版决策引擎 - 整合筹码质量风控+打分系统
 """
 
+import time
 from typing import Dict, List
 from data_fetcher import DataFetcher
 from risk_engine import RiskEngine, MarketStateType
 from stock_selector import StockSelector
 from chip_quality_strategy import ChipQualityStrategy
 from sector_money_flow import SectorMoneyFlowAnalyzer
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class DecisionMakerEnhanced:
@@ -42,7 +46,30 @@ class DecisionMakerEnhanced:
         else:
             self.chip_quality = None
             print("[增强决策] 筹码质量分析未启用")
-    
+
+        # 全局情绪闸（懒加载，复用同一 DataFetcher；结果带 TTL 缓存，批量决策只算一次）
+        self._emotion_filter = None
+        self._cached_emotion = None
+        self._emotion_cached_at = 0.0
+        self.EMOTION_CACHE_TTL = 300  # 秒
+        self.DRAGON_INTENDED_SINGLE = 0.30  # 龙头 BUY 的基准单票仓位（再由情绪上限裁剪）
+
+    def _get_emotion(self) -> Dict:
+        """获取全局情绪过滤结果（5 分钟内复用缓存）。任何异常降级为 None，不影响决策主流程。"""
+        now = time.time()
+        if self._cached_emotion is not None and (now - self._emotion_cached_at) < self.EMOTION_CACHE_TTL:
+            return self._cached_emotion
+        try:
+            if self._emotion_filter is None:
+                from market_emotion_filter import MarketEmotionFilter
+                self._emotion_filter = MarketEmotionFilter(self.data_fetcher)
+            self._cached_emotion = self._emotion_filter.calculate_emotion_score()
+            self._emotion_cached_at = now
+        except Exception as e:
+            logger.warning(f"情绪闸计算失败，跳过仓位约束: {e}")
+            self._cached_emotion = None
+        return self._cached_emotion
+
     def make_decision(self, code: str) -> Dict:
         """
         对个股做出决策（增强版）
@@ -674,7 +701,29 @@ class DecisionMakerEnhanced:
         """
         市场风控降级（替代原"空仓态直接IGNORE"的硬拦截）：
         空仓态下个股分析照常完成，BUY 降级为 WATCH，confidence 压至 ≤2，并附加风控警告
+        同时叠加"全局情绪闸"：用 cap_position 约束开仓——冰点期强制将 BUY 降级为 WATCH，
+        其余区间给出单票仓位上限建议。
         """
+        # === 全局情绪闸（先于市场态警告，使其在可交易态下也生效）===
+        try:
+            emotion = self._get_emotion()
+            if emotion:
+                from market_emotion_filter import PositionManager
+                gate = PositionManager.gate(
+                    score=emotion['score'],
+                    intended_single=self.DRAGON_INTENDED_SINGLE,
+                    is_open_signal=(result.get('decision') == 'BUY'),
+                    downgrade_to='WATCH',
+                )
+                result['emotion_gate'] = gate
+                if gate['gated']:
+                    result['decision'] = gate['final_signal']  # 冰点 → WATCH
+                    result['confidence'] = min(int(result.get('confidence', 1)), 2)
+                    result['reason'] = (f"情绪冰点(得分{gate['emotion_score']})禁止开仓，"
+                                        f"降级为观察；{result.get('reason', '')}")
+        except Exception as e:
+            logger.warning(f"应用情绪闸失败，跳过仓位约束: {e}")
+
         warning = self._market_risk_warning(market_state)
         if not warning:
             return result

@@ -26,12 +26,66 @@ async function loadSentiment() {
         if (json.success) {
             currentSentiment = json.data;
             renderSentiment(json.data);
+            loadEmotionGate();   // 叠加全局情绪闸（得分 + 仓位指令）
         } else {
             el.innerHTML = `<div class="error-msg">加载失败: ${json.error}</div>`;
         }
     } catch (e) {
         el.innerHTML = `<div class="error-msg">网络错误: ${e.message}</div>`;
     }
+}
+
+// ========== 全局情绪闸（得分 + 仓位指令）==========
+async function loadEmotionGate() {
+    const bar = document.getElementById('emotion-gate-bar');
+    if (!bar) return;
+    bar.innerHTML = '<span class="emotion-gate-loading">情绪闸计算中…</span>';
+    try {
+        const resp = await fetch('/api/market-emotion');
+        const json = await resp.json();
+        if (!json.success) {
+            bar.innerHTML = `<span class="emotion-gate-loading">情绪闸不可用</span>`;
+            return;
+        }
+        renderEmotionGate(json.data);
+    } catch (e) {
+        bar.innerHTML = `<span class="emotion-gate-loading">情绪闸网络错误</span>`;
+    }
+}
+
+function renderEmotionGate(data) {
+    const bar = document.getElementById('emotion-gate-bar');
+    if (!bar) return;
+    const levelColors = {
+        '高潮': '#43a047', '分歧': '#fb8c00', '退潮': '#e53935', '冰点': '#3949ab',
+    };
+    const pos = data.position || {};
+    const color = levelColors[data.level] || '#90a4ae';
+    const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+    const dims = data.dimensions || {};
+    const dimText = [
+        dims.prev_limitup_return && `接力 ${dims.prev_limitup_return.score}`,
+        dims.leader_blowup_rate && `龙头大面率 ${dims.leader_blowup_rate.raw != null ? (dims.leader_blowup_rate.raw * 100).toFixed(0) + '%' : 'N/A'}`,
+        dims.limit_down_count && `跌停 ${dims.limit_down_count.raw != null ? dims.limit_down_count.raw + '家' : 'N/A'}`,
+    ].filter(Boolean).join(' · ');
+    const confTip = data.confidence < 1 ? ` <span class="eg-conf">(可信度${Math.round(data.confidence * 100)}%)</span>` : '';
+
+    bar.innerHTML = `
+        <div class="emotion-gate" style="--eg-color:${color};">
+            <div class="eg-main">
+                <span class="eg-tag">🚦 情绪闸</span>
+                <span class="eg-score">${data.score}<small>分</small></span>
+                <span class="eg-level" style="background:${color};">${data.level}</span>
+                <span class="eg-action">${pos.action || ''}</span>
+            </div>
+            <div class="eg-caps">
+                <span title="总仓位上限">总仓 ≤ <b>${pct(pos.max_total_position)}</b></span>
+                <span title="单票仓位上限">单票 ≤ <b>${pct(pos.max_single_position)}</b></span>
+                <span class="eg-open ${pos.can_open ? 'ok' : 'no'}">${pos.can_open ? '允许开仓' : '禁止开仓'}</span>
+            </div>
+            <div class="eg-dims">${dimText}${confTip}</div>
+        </div>
+    `;
 }
 
 function renderSentiment(data) {
@@ -71,6 +125,7 @@ function renderSentiment(data) {
                 <div class="metric"><span class="metric-val">${((d.burst_rate || 0) * 100).toFixed(0)}%</span><span class="metric-label">炸板率</span></div>
                 <div class="metric"><span class="metric-val">${d.hot_sector_count || 0}</span><span class="metric-label">热门板块</span></div>
             </div>
+            <div id="emotion-gate-bar" class="emotion-gate-bar"></div>
         </div>
     `;
 }
