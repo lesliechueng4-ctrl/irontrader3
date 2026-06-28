@@ -40,10 +40,13 @@ function renderDragonLadder(data) {
     const prTxt = (pr == null) ? 'N/A' : Math.round(pr * 100) + '%';
     const sectors = data.sectors || [];
 
+    const buyReliable = sp.buy_hint_reliable !== false;   // 弱周期回测占下风 → 弱化买点
     const chip = (s) => {
         const divCls = s.divergence === '分歧' ? 'div' : (s.divergence === '一致' ? 'con' : 'neu');
         const crown = s.role === '龙头' ? '<span class="ld-crown">👑</span>' : '';
-        const buy = s.buy_hint ? '<span class="ld-buy" title="连板分歧、封单仍强：留意弱转强接力买点">★买点</span>' : '';
+        const buy = s.buy_hint
+            ? `<span class="ld-buy ${buyReliable ? '' : 'weak'}" title="${buyReliable ? '连板分歧、封单仍强：留意弱转强接力买点' : '弱周期回测占下风，谨慎'}">★买点${buyReliable ? '' : '?'}</span>`
+            : '';
         return `<span class="ld-chip ${divCls} ${s.role === '龙头' ? 'lead' : ''}" onclick="analyzeLowBuyByCode('${s.code}')"
             title="${s.name} ${s.limit_count}板 · 换手${s.turnover_rate}% · ${s.divergence}（${s.div_reason || ''}）点击分析">
             ${crown}<span class="ld-role">${s.role}</span><span class="ld-name">${s.name}</span><span class="ld-lc">${s.limit_count}板</span>${buy}</span>`;
@@ -60,18 +63,23 @@ function renderDragonLadder(data) {
 
     const warnHtml = data.sell_warning
         ? `<div class="ld-sell-warn">⚠️ 卖在一致预警：${data.sell_warning}</div>` : '';
+    const cycleColors = { '强': '#43a047', '中': '#fb8c00', '弱': '#e53935', '未知': '#90a4ae' };
+    const cyc = sp.cycle || '未知';
+    const noteHtml = data.signal_note
+        ? `<div class="ld-note ${buyReliable === false ? 'warn' : ''}">📊 回测提示：${data.signal_note}</div>` : '';
 
     el.innerHTML = `
     <div class="ld-card">
         <div class="ld-header">
-            <div class="ld-title">🐉 题材龙头梯队</div>
+            <div class="ld-title">🐉 题材龙头梯队 <span class="ld-cycle" style="background:${cycleColors[cyc]}">${cyc}周期</span></div>
             <div class="ld-spirit">
                 <span>空间高度 <b>${sp.max_height || 0}</b> 板</span>
-                <span title="昨日涨停股今日仍涨停的比例，赚钱效应/晋级率">晋级率 <b class="${(pr != null && pr >= 0.5) ? 'up' : 'down'}">${prTxt}</b></span>
+                <span title="昨日涨停股今日仍涨停的比例，赚钱效应/晋级率">晋级率 <b class="${(pr != null && pr >= 0.4) ? 'up' : 'down'}">${prTxt}</b></span>
                 <span>涨停 <b>${sp.limit_up_total || 0}</b> · 题材 ${sp.sector_count || 0}</span>
                 <span class="ld-dc">一致 <b class="con">${sp.consensus_count || 0}</b> / 分歧 <b class="div">${sp.divergent_count || 0}</b> / 买点 <b class="buy">${sp.buy_hint_count || 0}</b></span>
             </div>
         </div>
+        ${noteHtml}
         ${warnHtml}
         <div class="ld-sectors">${sectors.slice(0, 15).map(sectorBlock).join('') || '<div class="eg-empty">暂无涨停数据</div>'}</div>
         <div class="ld-legend">👑龙头 · <span class="ld-k div">分歧</span>(关注买点) · <span class="ld-k con">一致</span>(缩量不追) · ★弱转强买点 · 断层=龙头与龙二高度差≥2</div>

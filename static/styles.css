@@ -1770,3 +1770,7 @@ body {
 .ld-legend .ld-k { padding: 0 4px; border-radius: 3px; }
 .ld-legend .ld-k.div { color: #ffb74d; }
 .ld-legend .ld-k.con { color: #b0bec5; }
+.ld-cycle { font-size: 0.72rem; font-weight: 700; color: #fff; border-radius: 999px; padding: 1px 9px; vertical-align: middle; margin-left: 6px; }
+.ld-note { margin: 0.6rem 0 0; padding: 8px 12px; border-radius: 8px; font-size: 0.82rem; background: rgba(255,255,255,0.06); color: var(--text-secondary, #aab); border-left: 4px solid #607d8b; }
+.ld-note.warn { background: rgba(255,152,0,0.14); border-left-color: #ff9800; color: #ffe0b2; }
+.ld-buy.weak { background: rgba(120,120,120,0.25); color: #bdbdbd; }

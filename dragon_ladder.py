@@ -243,6 +243,26 @@ class DragonLadder:
         promotion = self._promotion()
         sell_warning = self._sell_warning(sectors, max_height)
 
+        # 周期定位（晋级率）：强/中/弱。阈值与回测分桶一致。
+        pr = promotion["rate"]
+        if pr is None:
+            cycle = "未知"
+        elif pr >= 0.4:
+            cycle = "强"
+        elif pr >= 0.2:
+            cycle = "中"
+        else:
+            cycle = "弱"
+        # 回测结论接回实盘：近20日(退潮样本)显示，弱周期里"分歧买点★"平均跑输
+        # (-4.8%/胜率38%，各换手阈值均亏)，强势一致股反而占优。强周期样本不足，暂不背书。
+        if cycle == "弱":
+            signal_note = ("退潮/弱周期：回测显示『分歧买点★』平均跑输（近20日 -4.8%、胜率38%，"
+                           "且各换手阈值均亏），强势一致股反而占优——买点★仅供参考，勿追分歧、宁做强转强。")
+        elif cycle in ("中", "强"):
+            signal_note = "周期回暖：可逐步启用分歧买点，但仍以题材龙头 + 强转强为先。"
+        else:
+            signal_note = ""
+
         # 全场分歧/一致汇总
         total = sum(s["count"] for s in sectors)
         consensus = sum(1 for s in sectors for it in s["stocks"] if it["divergence"] == "一致")
@@ -256,13 +276,16 @@ class DragonLadder:
                 "limit_up_total": total,
                 "max_height": max_height,
                 "sector_count": len(sectors),
+                "cycle": cycle,
                 "promotion_rate": promotion["rate"],
                 "promotion_promoted": promotion["promoted"],
                 "promotion_total": promotion["total"],
                 "consensus_count": consensus,
                 "divergent_count": divergent,
                 "buy_hint_count": buy_hints,
+                "buy_hint_reliable": cycle not in ("弱",),  # 弱周期买点不可靠（回测）
             },
+            "signal_note": signal_note,
             "sell_warning": sell_warning,
             "sectors": sectors,
         }
