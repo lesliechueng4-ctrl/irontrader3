@@ -152,13 +152,57 @@ def report(df: pd.DataFrame, horizons: List[int]):
         print(f"{ht:>6}{a['n']:>6}{wr:>8}{str(a['avg']):>8}")
 
 
+def merge_samples(old: Optional[pd.DataFrame], new: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """把新一轮逐笔结果并入历史样本库：按 (date, code) 去重(保留最新)，按日期排序。
+
+    这样每周复跑时，重叠的交易日不会重复计数，只有新交易日的样本累积进来——
+    随时间推移，强/中/弱各周期的样本会逐步攒够。
+    """
+    frames = [d for d in (old, new) if d is not None and not d.empty]
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.drop_duplicates(subset=["date", "code"], keep="last")
+    return combined.sort_values("date").reset_index(drop=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="回测综合研究")
     p.add_argument("--days", type=int, default=45)
     p.add_argument("--horizons", default="1,3,5")
     p.add_argument("--output", default="")
+    p.add_argument("--accumulate", default="",
+                   help="样本库 CSV 路径：新结果并入(去重)后再出累计报告。供每周定时任务累积各周期样本。")
+    p.add_argument("--report-only", action="store_true", help="只读样本库出报告，不重新取数")
     args = p.parse_args(argv)
     horizons = [int(x) for x in args.horizons.split(",") if x.strip()]
+
+    if args.accumulate:
+        import os
+        old = None
+        if os.path.exists(args.accumulate):
+            try:
+                old = pd.read_csv(args.accumulate)
+            except Exception as exc:
+                logger.warning(f"读取样本库失败: {exc}")
+        if args.report_only:
+            df = old if old is not None else pd.DataFrame()
+        else:
+            print(f"采集数据中（近 {args.days} 个交易日）...")
+            new = collect(args.days, horizons)
+            df = merge_samples(old, new)
+            os.makedirs(os.path.dirname(os.path.abspath(args.accumulate)), exist_ok=True)
+            df.to_csv(args.accumulate, index=False, encoding="utf-8-sig")
+            added = len(df) - (0 if old is None else len(old))
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            print(f"\n[{stamp}] 样本库 {args.accumulate}：累计 {len(df)} 笔（本轮新增 {max(added,0)}）")
+            try:
+                with open(args.accumulate.replace('.csv', '.log'), 'a', encoding='utf-8') as f:
+                    f.write(f"{stamp} total={len(df)} added={max(added,0)} days={args.days}\n")
+            except Exception:
+                pass
+        report(df, horizons)
+        return 0
 
     print(f"采集数据中（近 {args.days} 个交易日，约需数分钟）...")
     df = collect(args.days, horizons)

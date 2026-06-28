@@ -96,5 +96,24 @@ class RunIntegrationTest(unittest.TestCase):
         self.assertTrue(all("ret_1" in t for t in res["trades"]))
 
 
+class MergeSamplesTest(unittest.TestCase):
+    def test_dedup_keeps_latest_and_sorts(self):
+        from backtest_study import merge_samples
+        old = pd.DataFrame({"date": ["2026-06-02", "2026-06-03"], "code": ["600001", "600002"], "ret_3": [5.0, 1.0]})
+        new = pd.DataFrame({"date": ["2026-06-03", "2026-06-04"], "code": ["600002", "600003"], "ret_3": [9.9, 2.0]})
+        m = merge_samples(old, new)
+        self.assertEqual(len(m), 3)  # 600002@06-03 去重
+        row = m[(m["date"] == "2026-06-03") & (m["code"] == "600002")].iloc[0]
+        self.assertEqual(row["ret_3"], 9.9)  # 保留最新
+        self.assertEqual(list(m["date"]), ["2026-06-02", "2026-06-03", "2026-06-04"])  # 已排序
+
+    def test_merge_handles_empty(self):
+        from backtest_study import merge_samples
+        new = pd.DataFrame({"date": ["2026-06-02"], "code": ["1"], "ret_3": [1.0]})
+        self.assertEqual(len(merge_samples(None, new)), 1)
+        self.assertEqual(len(merge_samples(new, None)), 1)
+        self.assertTrue(merge_samples(None, None).empty)
+
+
 if __name__ == "__main__":
     unittest.main()
