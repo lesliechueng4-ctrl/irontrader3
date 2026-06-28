@@ -14,80 +14,92 @@ function initLowBuy() {
     loadSectors();
 }
 
-// ========== 市场情绪 ==========
+// ========== 市场情绪（统一卡片：情绪闸为主 + 老情绪指标作数据行）==========
 async function loadSentiment() {
     const el = document.getElementById('sentiment-panel');
     if (!el) return;
-    el.innerHTML = '<div class="loading-spinner">加载情绪数据...</div>';
+    el.innerHTML = '<div class="loading-spinner">加载市场情绪...</div>';
 
     try {
-        const resp = await fetch('/api/lowbuy/sentiment');
-        const json = await resp.json();
-        if (json.success) {
-            currentSentiment = json.data;
-            renderSentiment(json.data);
-            loadEmotionGate();   // 叠加全局情绪闸（得分 + 仓位指令）
-        } else {
-            el.innerHTML = `<div class="error-msg">加载失败: ${json.error}</div>`;
+        // 并行取：老情绪指标(涨停/跌停/连板/炸板...) + 情绪闸(得分/仓位/逐票对比)
+        const [sRes, eRes] = await Promise.allSettled([
+            fetch('/api/lowbuy/sentiment').then(r => r.json()),
+            fetch('/api/market-emotion').then(r => r.json()),
+        ]);
+        const sentiment = (sRes.status === 'fulfilled' && sRes.value.success) ? sRes.value.data : null;
+        const emotion = (eRes.status === 'fulfilled' && eRes.value.success) ? eRes.value.data : null;
+        currentSentiment = sentiment;
+        if (!sentiment && !emotion) {
+            el.innerHTML = `<div class="error-msg">情绪数据加载失败</div>`;
+            return;
         }
+        renderMoodCard(sentiment, emotion);
     } catch (e) {
         el.innerHTML = `<div class="error-msg">网络错误: ${e.message}</div>`;
     }
 }
 
-// ========== 全局情绪闸（得分 + 仓位指令）==========
-async function loadEmotionGate() {
-    const bar = document.getElementById('emotion-gate-bar');
-    if (!bar) return;
-    bar.innerHTML = '<span class="emotion-gate-loading">情绪闸计算中…</span>';
-    try {
-        const resp = await fetch('/api/market-emotion');
-        const json = await resp.json();
-        if (!json.success) {
-            bar.innerHTML = `<span class="emotion-gate-loading">情绪闸不可用</span>`;
-            return;
-        }
-        renderEmotionGate(json.data);
-    } catch (e) {
-        bar.innerHTML = `<span class="emotion-gate-loading">情绪闸网络错误</span>`;
-    }
-}
+// 统一情绪卡：情绪闸（得分+仓位指令）为主标题，老情绪指标作为支撑数据，附逐票对比
+function renderMoodCard(sentiment, emotion) {
+    const el = document.getElementById('sentiment-panel');
+    const bgColors = { '高潮': '#1b5e20', '分歧': '#e65100', '退潮': '#b71c1c', '冰点': '#1a237e' };
+    const ringColors = { '高潮': '#66bb6a', '分歧': '#ff9800', '退潮': '#ef5350', '冰点': '#42a5f5' };
+    const emojis = { '高潮': '🚀', '分歧': '🤔', '退潮': '🌊', '冰点': '🧊' };
 
-function renderEmotionGate(data) {
-    const bar = document.getElementById('emotion-gate-bar');
-    if (!bar) return;
-    const levelColors = {
-        '高潮': '#43a047', '分歧': '#fb8c00', '退潮': '#e53935', '冰点': '#3949ab',
-    };
-    const pos = data.position || {};
-    const color = levelColors[data.level] || '#90a4ae';
+    const e = emotion || {};
+    const pos = e.position || {};
+    const dims = e.dimensions || {};
+    const level = e.level || '未知';
+    const score = (e.score != null) ? e.score : 0;
+    const bg = bgColors[level] || '#455a64';
+    const ring = ringColors[level] || '#90a4ae';
+    const scoreAngle = (score / 100) * 360;
+    const d = (sentiment && sentiment.details) || {};
     const pct = (v) => `${Math.round((v || 0) * 100)}%`;
-    const dims = data.dimensions || {};
+
+    // 数据时效（客户端启发式：周末/盘前盘后提示，不依赖交易日历）
+    const now = new Date();
+    const day = now.getDay();
+    const hm = now.getHours() * 100 + now.getMinutes();
+    const offSession = (day === 0 || day === 6 || hm < 915 || hm > 1510);
+    const asOf = e.as_of ? e.as_of.slice(11, 16) : '';
+    const freshTip = `数据 ${asOf || '--'}${offSession ? ' · 非交易时段' : ''}${e.cached ? ' · 缓存' : ''}`;
+
     const dimText = [
         dims.prev_limitup_return && `接力 ${dims.prev_limitup_return.score}`,
         dims.leader_blowup_rate && `龙头大面率 ${dims.leader_blowup_rate.raw != null ? (dims.leader_blowup_rate.raw * 100).toFixed(0) + '%' : 'N/A'}`,
         dims.limit_down_count && `跌停 ${dims.limit_down_count.raw != null ? dims.limit_down_count.raw + '家' : 'N/A'}`,
     ].filter(Boolean).join(' · ');
-    const confTip = data.confidence < 1 ? ` <span class="eg-conf">(可信度${Math.round(data.confidence * 100)}%)</span>` : '';
-    const cachedTip = data.cached ? ' <span class="eg-cached" title="结果缓存中（约3分钟刷新一次）">·缓存</span>' : '';
+    const confTip = (e.confidence != null && e.confidence < 1) ? ` (可信度${Math.round(e.confidence * 100)}%)` : '';
 
-    bar.innerHTML = `
-        <div class="emotion-gate" style="--eg-color:${color};">
-            <div class="eg-main">
-                <span class="eg-tag">🚦 情绪闸</span>
-                <span class="eg-score">${data.score}<small>分</small></span>
-                <span class="eg-level" style="background:${color};">${data.level}</span>
-                <span class="eg-action">${pos.action || ''}</span>
+    el.innerHTML = `
+    <div class="sentiment-card mood-card" style="background: linear-gradient(135deg, ${bg}, ${bg}cc);">
+        <div class="sentiment-header">
+            <div class="sentiment-phase">
+                <span class="phase-emoji">${emojis[level] || '❓'}</span>
+                <span class="phase-label">${level}</span>
+                ${pos.action ? `<span class="mood-action">${pos.action}</span>` : ''}
             </div>
-            <div class="eg-caps">
-                <span title="总仓位上限">总仓 ≤ <b>${pct(pos.max_total_position)}</b></span>
-                <span title="单票仓位上限">单票 ≤ <b>${pct(pos.max_single_position)}</b></span>
-                <span class="eg-open ${pos.can_open ? 'ok' : 'no'}">${pos.can_open ? '允许开仓' : '禁止开仓'}</span>
+            <div class="sentiment-score-ring" style="--ring-color:${ring}; --ring-angle:${scoreAngle}deg;">
+                <span class="score-value">${score}</span><span class="score-unit">分</span>
             </div>
-            <div class="eg-dims">${dimText}${confTip}${cachedTip}</div>
-            ${buildEmotionDetail(dims)}
         </div>
-    `;
+        ${emotion ? `<div class="mood-caps">
+            <span title="总仓位上限">总仓 ≤ <b>${pct(pos.max_total_position)}</b></span>
+            <span title="单票仓位上限">单票 ≤ <b>${pct(pos.max_single_position)}</b></span>
+            <span class="eg-open ${pos.can_open ? 'ok' : 'no'}">${pos.can_open ? '允许开仓' : '禁止开仓'}</span>
+            <span class="mood-fresh">${freshTip}</span>
+        </div>` : ''}
+        <div class="sentiment-metrics">
+            <div class="metric"><span class="metric-val">${d.limit_up_count || 0}</span><span class="metric-label">涨停</span></div>
+            <div class="metric"><span class="metric-val">${d.limit_down_count || 0}</span><span class="metric-label">跌停</span></div>
+            <div class="metric"><span class="metric-val">${d.max_consecutive || 0}</span><span class="metric-label">连板高度</span></div>
+            <div class="metric"><span class="metric-val">${((d.up_down_ratio || 0) * 100).toFixed(0)}%</span><span class="metric-label">上涨占比</span></div>
+            <div class="metric"><span class="metric-val">${((d.burst_rate || 0) * 100).toFixed(0)}%</span><span class="metric-label">炸板率</span></div>
+            <div class="metric"><span class="metric-val">${d.hot_sector_count || 0}</span><span class="metric-label">热门板块</span></div>
+        </div>
+        ${emotion ? `<div class="eg-dims">三维：${dimText}${confTip}</div>${buildEmotionDetail(dims)}` : ''}
+    </div>`;
 }
 
 // 逐票对比明细：昨日涨停股今日怎么走 + 龙头今日表现
@@ -123,48 +135,6 @@ function buildEmotionDetail(dims) {
         </details>`;
     }
     return html;
-}
-
-function renderSentiment(data) {
-    const el = document.getElementById('sentiment-panel');
-    const phase = data.phase || '未知';
-    const score = data.score || 0;
-    const d = data.details || {};
-
-    const phaseColors = {
-        '冰点': { bg: '#1a237e', ring: '#42a5f5', emoji: '🧊', desc: '极度恐慌，最佳低吸时机' },
-        '回暖': { bg: '#1b5e20', ring: '#66bb6a', emoji: '🌱', desc: '赚钱效应回升，可以低吸' },
-        '亢奋': { bg: '#e65100', ring: '#ff9800', emoji: '🔥', desc: '全民狂欢，谨慎追高' },
-        '退潮': { bg: '#b71c1c', ring: '#ef5350', emoji: '🌊', desc: '高位杀跌，回避低吸' },
-        '未知': { bg: '#455a64', ring: '#90a4ae', emoji: '❓', desc: '数据不足' },
-    };
-    const pc = phaseColors[phase] || phaseColors['未知'];
-    const scoreAngle = (score / 100) * 360;
-
-    el.innerHTML = `
-        <div class="sentiment-card" style="background: linear-gradient(135deg, ${pc.bg}, ${pc.bg}cc);">
-            <div class="sentiment-header">
-                <div class="sentiment-phase">
-                    <span class="phase-emoji">${pc.emoji}</span>
-                    <span class="phase-label">${phase}期</span>
-                </div>
-                <div class="sentiment-score-ring" style="--ring-color: ${pc.ring}; --ring-angle: ${scoreAngle}deg;">
-                    <span class="score-value">${score}</span>
-                    <span class="score-unit">分</span>
-                </div>
-            </div>
-            <div class="sentiment-desc">${pc.desc}</div>
-            <div class="sentiment-metrics">
-                <div class="metric"><span class="metric-val">${d.limit_up_count || 0}</span><span class="metric-label">涨停</span></div>
-                <div class="metric"><span class="metric-val">${d.limit_down_count || 0}</span><span class="metric-label">跌停</span></div>
-                <div class="metric"><span class="metric-val">${d.max_consecutive || 0}</span><span class="metric-label">连板高度</span></div>
-                <div class="metric"><span class="metric-val">${((d.up_down_ratio || 0) * 100).toFixed(0)}%</span><span class="metric-label">上涨占比</span></div>
-                <div class="metric"><span class="metric-val">${((d.burst_rate || 0) * 100).toFixed(0)}%</span><span class="metric-label">炸板率</span></div>
-                <div class="metric"><span class="metric-val">${d.hot_sector_count || 0}</span><span class="metric-label">热门板块</span></div>
-            </div>
-            <div id="emotion-gate-bar" class="emotion-gate-bar"></div>
-        </div>
-    `;
 }
 
 // ========== 个股分析 ==========

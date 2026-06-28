@@ -181,9 +181,10 @@ function renderDecision(data) {
             <div style="text-align: right;">
                 <div class="decision-badge ${badgeClass}">${decision}</div>
                 <div class="confidence-stars">${stars}</div>
+                ${(typeof buildEmotionGateChip === 'function' && data.emotion_gate) ? `<div style="margin-top:6px;">${buildEmotionGateChip(data.emotion_gate)}</div>` : ''}
             </div>
         </div>
-        
+
         <div class="decision-reason">${data.reason}</div>
     `;
 

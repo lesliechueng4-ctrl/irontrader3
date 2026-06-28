@@ -709,9 +709,11 @@ class DecisionMakerEnhanced:
             emotion = self._get_emotion()
             if emotion:
                 from market_emotion_filter import PositionManager
+                # 意图单票仓位 = 龙头基准 × 信心系数(confidence/5)，再由情绪单票上限裁剪
+                conf_factor = max(0.0, min(1.0, int(result.get('confidence', 0)) / 5.0))
                 gate = PositionManager.gate(
                     score=emotion['score'],
-                    intended_single=self.DRAGON_INTENDED_SINGLE,
+                    intended_single=self.DRAGON_INTENDED_SINGLE * conf_factor,
                     is_open_signal=(result.get('decision') == 'BUY'),
                     downgrade_to='WATCH',
                 )

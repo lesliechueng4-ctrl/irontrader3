@@ -183,7 +183,10 @@ class LowBuyEngine:
         emotion = self._get_emotion()
         if emotion:
             from market_emotion_filter import PositionManager
-            intended = self.INTENDED_SINGLE.get(decision, 0.0)
+            # 意图单票仓位 = 决策基准 × 信心系数(综合分/100)，再由情绪单票上限裁剪。
+            # 这样强信号拿更大仓位、弱信号更小，而非一刀切。
+            conf_factor = max(0.0, min(1.0, total_score / 100.0))
+            intended = self.INTENDED_SINGLE.get(decision, 0.0) * conf_factor
             gate = PositionManager.gate(
                 score=emotion['score'],
                 intended_single=intended,

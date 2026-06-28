@@ -696,72 +696,72 @@ body {
     flex-direction: column;
     gap: 0.45rem;
 }
-.emotion-gate .eg-main {
+.eg-main {
     display: flex;
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
 }
-.emotion-gate .eg-tag {
+.eg-tag {
     font-weight: 700;
     color: #fff;
     letter-spacing: 0.5px;
 }
-.emotion-gate .eg-score {
+.eg-score {
     font-size: 1.5rem;
     font-weight: 800;
     color: #fff;
     line-height: 1;
 }
-.emotion-gate .eg-score small {
+.eg-score small {
     font-size: 0.8rem;
     font-weight: 500;
     margin-left: 1px;
 }
-.emotion-gate .eg-level {
+.eg-level {
     color: #fff;
     font-weight: 700;
     font-size: 0.8rem;
     padding: 2px 10px;
     border-radius: 999px;
 }
-.emotion-gate .eg-action {
+.eg-action {
     color: #fff;
     font-weight: 600;
     font-size: 0.95rem;
 }
-.emotion-gate .eg-caps {
+.eg-caps {
     display: flex;
     align-items: center;
     gap: 1rem;
     font-size: 0.85rem;
     color: rgba(255,255,255,0.92);
 }
-.emotion-gate .eg-caps b { color: #fff; }
-.emotion-gate .eg-open {
+.eg-caps b { color: #fff; }
+.eg-open {
     margin-left: auto;
     padding: 2px 10px;
     border-radius: 999px;
     font-size: 0.78rem;
     font-weight: 700;
 }
-.emotion-gate .eg-open.ok { background: rgba(67,160,71,0.35); color: #b9f6ca; }
-.emotion-gate .eg-open.no { background: rgba(229,57,53,0.35); color: #ffcdd2; }
-.emotion-gate .eg-dims {
+.eg-open.ok { background: rgba(67,160,71,0.35); color: #b9f6ca; }
+.eg-open.no { background: rgba(229,57,53,0.35); color: #ffcdd2; }
+.eg-dims {
     font-size: 0.78rem;
     color: rgba(255,255,255,0.72);
 }
-.emotion-gate .eg-conf { color: #ffcc80; }
-.emotion-gate .eg-cached { color: rgba(255,255,255,0.5); }
+.eg-conf { color: #ffcc80; }
+.eg-cached { color: rgba(255,255,255,0.5); }
 
 /* 情绪闸逐票对比明细 */
-.emotion-gate .eg-detail {
+.eg-detail {
     margin-top: 0.5rem;
     background: rgba(255,255,255,0.05);
     border-radius: 8px;
     padding: 0.25rem 0.5rem;
 }
-.emotion-gate .eg-detail > summary {
+.eg-detail > summary {
     cursor: pointer;
     font-size: 0.82rem;
     color: rgba(255,255,255,0.9);
@@ -769,28 +769,54 @@ body {
     list-style: none;
     user-select: none;
 }
-.emotion-gate .eg-detail > summary::-webkit-details-marker { display: none; }
-.emotion-gate .eg-detail > summary::before { content: '▸ '; opacity: 0.7; }
-.emotion-gate .eg-detail[open] > summary::before { content: '▾ '; }
-.emotion-gate .eg-detail b.up { color: #b9f6ca; }
-.emotion-gate .eg-detail b.down { color: #ffcdd2; }
-.emotion-gate .eg-detail-body { padding: 0.3rem 0 0.4rem; }
-.emotion-gate .eg-group { margin-bottom: 0.4rem; }
-.emotion-gate .eg-group-t { font-size: 0.76rem; margin-bottom: 0.3rem; color: rgba(255,255,255,0.8); }
-.emotion-gate .eg-group-t.up { color: #b9f6ca; }
-.emotion-gate .eg-group-t.down { color: #ffcdd2; }
-.emotion-gate .eg-stocks { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-.emotion-gate .eg-stock {
+.eg-detail > summary::-webkit-details-marker { display: none; }
+.eg-detail > summary::before { content: '▸ '; opacity: 0.7; }
+.eg-detail[open] > summary::before { content: '▾ '; }
+.eg-detail b.up { color: #ff8a80; }   /* A股红涨 */
+.eg-detail b.down { color: #69f0ae; }  /* A股绿跌 */
+.eg-detail-body { padding: 0.3rem 0 0.4rem; }
+.eg-group { margin-bottom: 0.4rem; }
+.eg-group-t { font-size: 0.76rem; margin-bottom: 0.3rem; color: rgba(255,255,255,0.8); }
+.eg-group-t.up { color: #ff8a80; }   /* A股红涨 */
+.eg-group-t.down { color: #69f0ae; }  /* A股绿跌 */
+.eg-stocks { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.eg-stock {
     display: inline-flex; align-items: center; gap: 4px;
     background: rgba(0,0,0,0.25); border-radius: 6px;
     padding: 3px 8px; font-size: 0.76rem; cursor: pointer;
     border: 1px solid transparent;
 }
-.emotion-gate .eg-stock:hover { border-color: rgba(255,255,255,0.4); }
-.emotion-gate .eg-stock .eg-st-name { color: #fff; }
-.emotion-gate .eg-stock.up .eg-st-chg { color: #ff8a80; font-weight: 700; }   /* A股红涨 */
-.emotion-gate .eg-stock.down .eg-st-chg { color: #80d8ff; font-weight: 700; } /* 绿/蓝跌 */
-.emotion-gate .eg-empty { color: rgba(255,255,255,0.4); font-size: 0.76rem; }
+.eg-stock:hover { border-color: rgba(255,255,255,0.4); }
+.eg-stock .eg-st-name { color: #fff; }
+.eg-stock.up .eg-st-chg { color: #ff8a80; font-weight: 700; }   /* A股红涨 */
+.eg-stock.down .eg-st-chg { color: #69f0ae; font-weight: 700; } /* A股绿跌 */
+.eg-empty { color: rgba(255,255,255,0.4); font-size: 0.76rem; }
+
+/* ===== 统一情绪卡：仓位指令行/动作/数据时效 ===== */
+.mood-card .mood-action {
+    background: rgba(255,255,255,0.18);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 2px 12px;
+    border-radius: 999px;
+    margin-left: 8px;
+}
+.mood-caps {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    font-size: 0.88rem;
+    color: rgba(255,255,255,0.92);
+    margin: 0.5rem 0 0.75rem;
+}
+.mood-caps b { color: #fff; }
+.mood-caps .mood-fresh {
+    margin-left: auto;
+    font-size: 0.76rem;
+    color: rgba(255,255,255,0.6);
+}
 
 .metric {
     text-align: center;
@@ -1682,10 +1708,10 @@ body {
     .itable-search { flex: 1 1 100%; }
 
     /* 情绪闸：仓位上限行换行 */
-    .emotion-gate .eg-caps { flex-wrap: wrap; gap: 0.5rem; }
-    .emotion-gate .eg-open { margin-left: 0; }
-    .emotion-gate .eg-main { gap: 0.4rem; }
-    .emotion-gate .eg-score { font-size: 1.3rem; }
+    .eg-caps { flex-wrap: wrap; gap: 0.5rem; }
+    .eg-open { margin-left: 0; }
+    .eg-main { gap: 0.4rem; }
+    .eg-score { font-size: 1.3rem; }
 
     /* 决策结果/分析卡内边距收紧 */
     .analysis-card, .lowbuy-section { padding-left: 12px; padding-right: 12px; }
