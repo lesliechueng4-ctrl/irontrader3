@@ -2,8 +2,6 @@
 # Merged features from IronTrader (Rule-based) and IronTrader2 (AI-based)
 
 from flask import Flask, jsonify, request, render_template
-from future_predictor import quick_predict
-from rag_engine import rag_engine
 from scanner_routes import scanner_bp, _create_scan_job, _get_scan_job, _update_scan_job
 from threading import Lock, Thread
 from logger_config import get_logger
@@ -372,29 +370,6 @@ def zt_pool():
         _ZT_POOL_CACHE['data'] = payload
         _ZT_POOL_CACHE['at'] = time.time()
     return jsonify(payload)
-
-# ==========================================
-# API Routes - IronTrader2 (AI-based)
-# ==========================================
-
-@app.route('/api/future-predict')
-def future_predict():
-    """Get future prediction for stock"""
-    code = (request.args.get('code') or '').strip()
-    raise_if_invalid_stock_code(code)
-
-    prediction = quick_predict(code)
-    return jsonify({'success': True, 'data': prediction})
-
-@app.route('/api/rag-query')
-def rag_query():
-    """Query RAG knowledge base"""
-    query = request.args.get('query')
-    if not query:
-        return jsonify({'success': False, 'error': 'Query required'}), 400
-
-    results = rag_engine.query(query)
-    return jsonify({'success': True, 'data': results})
 
 # ==========================================
 # Low-Buy Analysis Routes (低吸分析系统)
