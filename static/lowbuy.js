@@ -114,6 +114,16 @@ function buildEmotionDetail(dims) {
     };
     const list = (arr) => (arr && arr.length) ? arr.map(stockRow).join('') : '<span class="eg-empty">—</span>';
 
+    // 龙头行：额外展示 昨日单日 + 近10日累计（入选依据）
+    const fmt = (v) => (v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%');
+    const cls = (v) => (v == null ? '' : (v >= 0 ? 'up' : 'down'));
+    const leaderRow = (s) => `<span class="eg-stock eg-leader ${s.change >= 0 ? 'up' : 'down'}" onclick="analyzeLowBuyByCode('${s.code}')" title="点击分析">
+        <span class="eg-st-name">${s.name || s.code}</span>
+        <span class="eg-st-chg">今${(s.change >= 0 ? '+' : '') + (s.change != null ? s.change.toFixed(2) : '--')}%</span>
+        <span class="eg-st-sub">昨<i class="${cls(s.prev_change)}">${fmt(s.prev_change)}</i> · 近10日<i class="${cls(s.recent_return)}">${fmt(s.recent_return)}</i></span>
+    </span>`;
+    const leaderList = (arr) => (arr && arr.length) ? arr.map(leaderRow).join('') : '<span class="eg-empty">—</span>';
+
     let html = '';
     if (prev.count != null) {
         html += `
@@ -128,9 +138,9 @@ function buildEmotionDetail(dims) {
     if (leaders.items && leaders.items.length) {
         html += `
         <details class="eg-detail">
-            <summary>趋势龙头 ${leaders.total || 0} 只 · 今日大面 <b class="down">${leaders.blown || 0}</b> 只（点开看明细）</summary>
+            <summary title="趋势龙头：换手活跃、剔除ST/科创/北交，近10个交易日累计涨幅前30">趋势龙头 ${leaders.total || 0} 只 · 今日大面 <b class="down">${leaders.blown || 0}</b> 只（点开看明细：今日/昨日/近10日）</summary>
             <div class="eg-detail-body">
-                <div class="eg-group"><div class="eg-stocks">${list(leaders.items)}</div></div>
+                <div class="eg-group"><div class="eg-stocks eg-stocks-leader">${leaderList(leaders.items)}</div></div>
             </div>
         </details>`;
     }

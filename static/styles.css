@@ -792,6 +792,14 @@ body {
 .eg-stock.down .eg-st-chg { color: #69f0ae; font-weight: 700; } /* A股绿跌 */
 .eg-empty { color: rgba(255,255,255,0.4); font-size: 0.76rem; }
 
+/* 龙头行：今日 + 昨日 + 近10日 三段 */
+.eg-stocks-leader { gap: 0.45rem; }
+.eg-stock.eg-leader { flex-direction: column; align-items: flex-start; gap: 1px; padding: 4px 9px; }
+.eg-stock.eg-leader .eg-st-sub { font-size: 0.68rem; color: rgba(255,255,255,0.6); }
+.eg-stock.eg-leader .eg-st-sub i { font-style: normal; }
+.eg-stock.eg-leader .eg-st-sub i.up { color: #ff8a80; }   /* A股红涨 */
+.eg-stock.eg-leader .eg-st-sub i.down { color: #69f0ae; } /* A股绿跌 */
+
 /* ===== 统一情绪卡：仓位指令行/动作/数据时效 ===== */
 .mood-card .mood-action {
     background: rgba(255,255,255,0.18);

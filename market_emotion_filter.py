@@ -157,6 +157,7 @@ class MarketEmotionFilter:
         self._spot_cached_at: float = 0.0
         self._leader_pool_cache: Optional[List[str]] = None
         self._leader_pool_cached_at: float = 0.0
+        self._leader_metrics: Dict[str, Dict[str, Optional[float]]] = {}  # 龙头近期涨幅/昨日涨跌
         self._result_cache: Optional[Dict[str, object]] = None
         self._result_cached_at: float = 0.0
 
@@ -270,21 +271,38 @@ class MarketEmotionFilter:
     # ------------------------------------------------------------------
     # D2：趋势龙头池今日大面率（核心资产亏钱效应）
     # ------------------------------------------------------------------
-    def _compute_recent_return(self, code: str) -> Optional[float]:
-        """计算单只股票近 lookback 个交易日的累计涨幅(%)。失败返回 None。"""
+    def _compute_leader_metrics(self, code: str) -> Optional[Dict[str, Optional[float]]]:
+        """计算单只股票的趋势指标：
+            recent_return —— 近 lookback 个交易日累计涨幅(%)，即入选龙头池的依据；
+            prev_change   —— 最近一个已收盘交易日的单日涨跌幅(%)，即“昨日走势”。
+        失败返回 None。
+        """
         try:
             lookback = self.config.leader_lookback_days
-            df = self.fetcher.get_stock_history(code, days=lookback + 10)
-            if df is None or len(df) < lookback + 1 or "close" not in df.columns:
+            df = self.fetcher.get_stock_history(code, days=lookback + 12)
+            if df is None or "close" not in df.columns:
                 return None
-            closes = pd.to_numeric(df["close"], errors="coerce").dropna()
+            closes = pd.to_numeric(df["close"], errors="coerce").dropna().reset_index(drop=True)
             if len(closes) < lookback + 1:
                 return None
+
+            recent_return = None
             base = float(closes.iloc[-1 - lookback])
             last = float(closes.iloc[-1])
-            if base <= 0:
-                return None
-            return (last - base) / base * 100.0
+            if base > 0:
+                recent_return = (last - base) / base * 100.0
+
+            # “昨日”=最新交易日的前一交易日的单日涨跌。
+            # 实时快照的“今日涨跌幅”在盘后/休市时等于历史最后一根K线(最新交易日)，
+            # 因此“昨日”取倒数第2根相对第3根的涨跌（= 最新交易日的前一日），避免今/昨重复。
+            prev_change = None
+            if len(closes) >= 3:
+                a = float(closes.iloc[-3])
+                b = float(closes.iloc[-2])
+                if a > 0:
+                    prev_change = (b - a) / a * 100.0
+
+            return {"recent_return": recent_return, "prev_change": prev_change}
         except Exception:
             return None
 
@@ -346,26 +364,27 @@ class MarketEmotionFilter:
             if not codes:
                 return self._leader_pool_cache or []
 
-            # 并发计算近期涨幅
-            recent: Dict[str, float] = {}
+            # 并发计算每只候选的趋势指标（近期涨幅 + 昨日涨跌）
+            metrics: Dict[str, Dict[str, Optional[float]]] = {}
             workers = max(1, min(cfg.leader_workers, len(codes)))
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {executor.submit(self._compute_recent_return, c): c for c in codes}
+                futures = {executor.submit(self._compute_leader_metrics, c): c for c in codes}
                 for fut in as_completed(futures):
                     code = futures[fut]
                     try:
-                        val = fut.result()
+                        m = fut.result()
                     except Exception:
-                        val = None
-                    if val is not None:
-                        recent[code] = val
+                        m = None
+                    if m is not None and m.get("recent_return") is not None:
+                        metrics[code] = m
 
-            if not recent:
+            if not metrics:
                 logger.warning("龙头池近期涨幅全部计算失败")
                 return self._leader_pool_cache or []
 
-            leaders = sorted(recent, key=recent.get, reverse=True)[: cfg.leader_pool_size]
+            leaders = sorted(metrics, key=lambda c: metrics[c]["recent_return"], reverse=True)[: cfg.leader_pool_size]
             self._leader_pool_cache = leaders
+            self._leader_metrics = {c: metrics[c] for c in leaders}  # 仅保留入选龙头的指标
             self._leader_pool_cached_at = now
             logger.info(f"龙头池构建完成，共 {len(leaders)} 只")
             return leaders
@@ -411,16 +430,22 @@ class MarketEmotionFilter:
             total = len(sub)
             blown = int((sub["_chg"] <= cfg.big_loss_pct).sum())
 
-            # 逐票明细（按今日涨跌幅升序，最惨的在前），标记是否“大面”
-            items = [
-                {
+            # 逐票明细（按今日涨跌幅升序，最惨的在前），标记是否“大面”，
+            # 并附上近期涨幅(入选依据)与昨日单日涨跌(走势)
+            def _round(v):
+                return round(float(v), 2) if v is not None else None
+
+            items = []
+            for _, r in sub.sort_values("_chg").iterrows():
+                m = self._leader_metrics.get(r["_code"], {})
+                items.append({
                     "code": r["_code"],
                     "name": r["_name"],
-                    "change": round(float(r["_chg"]), 2),
+                    "change": round(float(r["_chg"]), 2),          # 今日
+                    "prev_change": _round(m.get("prev_change")),    # 昨日
+                    "recent_return": _round(m.get("recent_return")),# 近N日累计
                     "blown": bool(r["_chg"] <= cfg.big_loss_pct),
-                }
-                for _, r in sub.sort_values("_chg").iterrows()
-            ]
+                })
             result.update(
                 total=total,
                 blown=blown,
