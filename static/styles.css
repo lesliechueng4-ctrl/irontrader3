@@ -752,6 +752,45 @@ body {
     color: rgba(255,255,255,0.72);
 }
 .emotion-gate .eg-conf { color: #ffcc80; }
+.emotion-gate .eg-cached { color: rgba(255,255,255,0.5); }
+
+/* 情绪闸逐票对比明细 */
+.emotion-gate .eg-detail {
+    margin-top: 0.5rem;
+    background: rgba(255,255,255,0.05);
+    border-radius: 8px;
+    padding: 0.25rem 0.5rem;
+}
+.emotion-gate .eg-detail > summary {
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: rgba(255,255,255,0.9);
+    padding: 0.35rem 0.2rem;
+    list-style: none;
+    user-select: none;
+}
+.emotion-gate .eg-detail > summary::-webkit-details-marker { display: none; }
+.emotion-gate .eg-detail > summary::before { content: '▸ '; opacity: 0.7; }
+.emotion-gate .eg-detail[open] > summary::before { content: '▾ '; }
+.emotion-gate .eg-detail b.up { color: #b9f6ca; }
+.emotion-gate .eg-detail b.down { color: #ffcdd2; }
+.emotion-gate .eg-detail-body { padding: 0.3rem 0 0.4rem; }
+.emotion-gate .eg-group { margin-bottom: 0.4rem; }
+.emotion-gate .eg-group-t { font-size: 0.76rem; margin-bottom: 0.3rem; color: rgba(255,255,255,0.8); }
+.emotion-gate .eg-group-t.up { color: #b9f6ca; }
+.emotion-gate .eg-group-t.down { color: #ffcdd2; }
+.emotion-gate .eg-stocks { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.emotion-gate .eg-stock {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: rgba(0,0,0,0.25); border-radius: 6px;
+    padding: 3px 8px; font-size: 0.76rem; cursor: pointer;
+    border: 1px solid transparent;
+}
+.emotion-gate .eg-stock:hover { border-color: rgba(255,255,255,0.4); }
+.emotion-gate .eg-stock .eg-st-name { color: #fff; }
+.emotion-gate .eg-stock.up .eg-st-chg { color: #ff8a80; font-weight: 700; }   /* A股红涨 */
+.emotion-gate .eg-stock.down .eg-st-chg { color: #80d8ff; font-weight: 700; } /* 绿/蓝跌 */
+.emotion-gate .eg-empty { color: rgba(255,255,255,0.4); font-size: 0.76rem; }
 
 .metric {
     text-align: center;
@@ -1613,4 +1652,48 @@ body {
     .scanner-progress-row {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+}
+
+/* ============================================================
+   手机端响应式增强（server/手机访问）
+   ============================================================ */
+@media (max-width: 640px) {
+    /* 顶部标签：缩小、可换行 */
+    .tab-container { flex-wrap: wrap; gap: 6px; padding: 6px; }
+    .tab-btn { font-size: 1rem; padding: 8px 16px; flex: 1 1 auto; }
+
+    /* 扫描按钮栏：横向自动换行成 2 列，加大点击区（覆盖 968px 的纵向堆叠）*/
+    .lowbuy-search { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+    #lowbuy-code-input { flex: 1 1 100%; }
+    .lowbuy-analyze-btn,
+    .lowbuy-scan-btn {
+        flex: 1 1 46%;
+        min-height: 44px;            /* 触摸友好 */
+        padding: 10px 12px;
+        font-size: 0.9rem;
+        white-space: nowrap;
+    }
+
+    /* 扫描设置表单：堆叠 */
+    .scan-settings { flex-direction: column; align-items: stretch; }
+
+    /* 工具栏/分页：换行 */
+    .itable-toolbar { flex-wrap: wrap; gap: 8px; }
+    .itable-search { flex: 1 1 100%; }
+
+    /* 情绪闸：仓位上限行换行 */
+    .emotion-gate .eg-caps { flex-wrap: wrap; gap: 0.5rem; }
+    .emotion-gate .eg-open { margin-left: 0; }
+    .emotion-gate .eg-main { gap: 0.4rem; }
+    .emotion-gate .eg-score { font-size: 1.3rem; }
+
+    /* 决策结果/分析卡内边距收紧 */
+    .analysis-card, .lowbuy-section { padding-left: 12px; padding-right: 12px; }
+}
+
+@media (max-width: 480px) {
+    .sentiment-metrics { grid-template-columns: repeat(2, 1fr); }
+    .lowbuy-analyze-btn,
+    .lowbuy-scan-btn { flex-basis: 100%; }   /* 极窄屏单列 */
+    .scanner-progress-row { grid-template-columns: 1fr; }
 }

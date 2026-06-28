@@ -125,6 +125,43 @@ class LeaderPoolTest(unittest.TestCase):
         self.assertAlmostEqual(blowup["rate"], 2 / 3, places=3)
 
 
+class PrevLimitupDetailTest(unittest.TestCase):
+    def test_detail_items_and_counts(self):
+        flt = MarketEmotionFilter(data_fetcher=_FakeFetcher())
+        prev_df = pd.DataFrame({
+            "代码": ["600001", "600002", "600003"],
+            "名称": ["甲", "乙", "丙"],
+            "涨跌幅": [5.0, -3.0, 1.0],
+        })
+        with patch.object(mef.ak, "stock_zt_pool_previous_em", return_value=prev_df):
+            detail = flt.get_prev_limitup_detail()
+        self.assertEqual(detail["count"], 3)
+        self.assertEqual(detail["up_count"], 2)
+        self.assertEqual(detail["down_count"], 1)
+        # 按今日涨跌幅降序：甲(5) 在最前，乙(-3) 在最后
+        self.assertEqual(detail["items"][0]["code"], "600001")
+        self.assertEqual(detail["items"][-1]["code"], "600002")
+        self.assertAlmostEqual(detail["avg"], 1.0, places=3)
+
+
+class ResultCacheTest(unittest.TestCase):
+    def test_result_cached_then_force_recomputes(self):
+        flt = MarketEmotionFilter(data_fetcher=_FakeFetcher())
+        prev_df = pd.DataFrame({"代码": ["1"], "名称": ["x"], "涨跌幅": [1.0]})
+        dt_df = pd.DataFrame({"代码": ["1"] * 3})
+        with patch.object(mef.ak, "stock_zh_a_spot_em", side_effect=RuntimeError("net")), \
+             patch.object(mef.ak, "stock_zt_pool_previous_em", return_value=prev_df) as prev_mock, \
+             patch.object(mef.ak, "stock_zt_pool_dtgc_em", return_value=dt_df):
+            r1 = flt.calculate_emotion_score()
+            self.assertFalse(r1["cached"])
+            r2 = flt.calculate_emotion_score()
+            self.assertTrue(r2["cached"])               # 第二次命中缓存
+            self.assertEqual(r1["score"], r2["score"])
+            calls_after_cache = prev_mock.call_count
+            flt.calculate_emotion_score(force=True)      # 强制重算
+            self.assertGreater(prev_mock.call_count, calls_after_cache)
+
+
 class IntegrationScoreTest(unittest.TestCase):
     def test_full_score_all_sources_ok(self):
         fetcher = _FakeFetcher({"600001": 20.0, "600002": 50.0, "600005": 35.0})

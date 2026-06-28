@@ -84,6 +84,10 @@ class EmotionConfig:
     # ---- 缓存 TTL（秒）----
     spot_cache_ttl: int = 120            # 全A快照
     leader_pool_cache_ttl: int = 1800    # 龙头池成员（近期涨幅前N，盘中基本稳定）
+    result_cache_ttl: int = 180          # 综合情绪结果整体缓存（避免每次请求都重新取数）
+
+    # ---- 明细展示条数 ----
+    detail_top_n: int = 10               # 昨日涨停今日表现：各取涨/跌前 N 条
 
     # ---- 情绪等级阈值 ----
     level_high: int = 80     # >= 高潮
@@ -156,6 +160,8 @@ class MarketEmotionFilter:
         self._spot_cached_at: float = 0.0
         self._leader_pool_cache: Optional[List[str]] = None
         self._leader_pool_cached_at: float = 0.0
+        self._result_cache: Optional[Dict[str, object]] = None
+        self._result_cached_at: float = 0.0
 
     # ------------------------------------------------------------------
     # 基础工具
@@ -203,28 +209,66 @@ class MarketEmotionFilter:
     # ------------------------------------------------------------------
     # D1：昨日涨停股今日平均收益率（连板接力情绪）
     # ------------------------------------------------------------------
-    def get_prev_limitup_avg_return(self) -> Optional[float]:
-        """昨日涨停股今日平均涨跌幅(%)。
+    def get_prev_limitup_detail(self) -> Dict[str, object]:
+        """昨日涨停股今日表现明细。
 
-        正值表示接力赚钱、情绪延续；显著负值表示高位股集体杀跌、退潮。
-        取数失败返回 None。
+        Returns: {
+            'avg': float|None,     # 今日平均涨跌幅(%)
+            'count': int,          # 昨日涨停股数
+            'up_count': int,       # 今日上涨家数
+            'down_count': int,     # 今日下跌家数
+            'items': [             # 逐票明细（按今日涨跌幅降序）
+                {'code', 'name', 'change', 'prev_limit'(可选连板数)}, ...
+            ],
+        }
+        取数失败时 avg=None、items=[]。
         """
+        empty = {'avg': None, 'count': 0, 'up_count': 0, 'down_count': 0, 'items': []}
         if ak is None:
-            return None
+            return empty
         try:
             df = ak.stock_zt_pool_previous_em(date=self._today_str())
             if df is None or df.empty:
                 logger.info("昨日涨停池为空（可能为休市或数据延迟）")
-                return None
+                return empty
             change_col = self._find_col(df, "涨跌幅", "涨幅")
             if not change_col:
                 logger.warning("昨日涨停池未找到涨跌幅列")
-                return None
-            avg = pd.to_numeric(df[change_col], errors="coerce").mean()
-            return float(avg) if pd.notna(avg) else None
+                return empty
+            code_col = self._find_col(df, "代码")
+            name_col = self._find_col(df, "名称")
+            limit_col = self._find_col(df, "连板", "涨停统计")
+
+            work = df.copy()
+            work["_chg"] = pd.to_numeric(work[change_col], errors="coerce")
+            work = work.dropna(subset=["_chg"])
+            avg = float(work["_chg"].mean()) if not work.empty else None
+
+            items = []
+            for _, r in work.sort_values("_chg", ascending=False).iterrows():
+                item = {
+                    "code": str(r[code_col]).zfill(6) if code_col else "",
+                    "name": str(r[name_col]) if name_col else "",
+                    "change": round(float(r["_chg"]), 2),
+                }
+                if limit_col:
+                    item["prev_limit"] = str(r[limit_col])
+                items.append(item)
+
+            return {
+                "avg": avg,
+                "count": len(work),
+                "up_count": int((work["_chg"] > 0).sum()),
+                "down_count": int((work["_chg"] < 0).sum()),
+                "items": items,
+            }
         except Exception as exc:
             logger.warning(f"获取昨日涨停今日表现失败: {exc}")
-            return None
+            return empty
+
+    def get_prev_limitup_avg_return(self) -> Optional[float]:
+        """昨日涨停股今日平均涨跌幅(%)。取数失败返回 None。（明细见 get_prev_limitup_detail）"""
+        return self.get_prev_limitup_detail()["avg"]
 
     # ------------------------------------------------------------------
     # D2：趋势龙头池今日大面率（核心资产亏钱效应）
@@ -343,7 +387,7 @@ class MarketEmotionFilter:
         }
         """
         cfg = self.config
-        result = {"rate": None, "total": 0, "blown": 0, "threshold_pct": cfg.big_loss_pct}
+        result = {"rate": None, "total": 0, "blown": 0, "threshold_pct": cfg.big_loss_pct, "items": []}
 
         leaders = self._build_leader_pool()
         if not leaders:
@@ -357,6 +401,7 @@ class MarketEmotionFilter:
         try:
             code_col = self._find_col(spot, "代码")
             change_col = self._find_col(spot, "涨跌幅")
+            name_col = self._find_col(spot, "名称")
             if not code_col or not change_col:
                 result["total"] = len(leaders)
                 return result
@@ -364,14 +409,26 @@ class MarketEmotionFilter:
             snap = spot.copy()
             snap["_code"] = snap[code_col].astype(str).str.zfill(6)
             snap["_chg"] = pd.to_numeric(snap[change_col], errors="coerce")
-            sub = snap[snap["_code"].isin(set(leaders))]
-            valid = sub["_chg"].dropna()
-            total = len(valid)
-            blown = int((valid <= cfg.big_loss_pct).sum())
+            snap["_name"] = snap[name_col].astype(str) if name_col else ""
+            sub = snap[snap["_code"].isin(set(leaders))].dropna(subset=["_chg"])
+            total = len(sub)
+            blown = int((sub["_chg"] <= cfg.big_loss_pct).sum())
+
+            # 逐票明细（按今日涨跌幅升序，最惨的在前），标记是否“大面”
+            items = [
+                {
+                    "code": r["_code"],
+                    "name": r["_name"],
+                    "change": round(float(r["_chg"]), 2),
+                    "blown": bool(r["_chg"] <= cfg.big_loss_pct),
+                }
+                for _, r in sub.sort_values("_chg").iterrows()
+            ]
             result.update(
                 total=total,
                 blown=blown,
                 rate=(blown / total) if total > 0 else None,
+                items=items,
             )
             return result
         except Exception as exc:
@@ -445,55 +502,87 @@ class MarketEmotionFilter:
             return "退潮"
         return "冰点"
 
-    def calculate_emotion_score(self) -> Dict[str, object]:
-        """计算 0~100 综合市场情绪得分。
+    def calculate_emotion_score(self, force: bool = False) -> Dict[str, object]:
+        """计算 0~100 综合市场情绪得分（带 TTL 缓存，避免每次请求都重新取数）。
+
+        Args:
+            force: True 时忽略缓存强制重算。
 
         Returns: {
             'score': int,          # 0~100 综合分
             'level': str,          # 高潮/分歧/退潮/冰点
             'confidence': float,   # 可用维度占比(0~1)，反映结果可信度
             'as_of': str,          # 计算时间
-            'dimensions': {name: {...}},   # 各维度明细
+            'cached': bool,        # 本次是否命中缓存
+            'dimensions': {name: {...}},   # 各维度明细（含逐票对比 items）
             'position': {...},     # 据综合分给出的仓位指令（便捷字段）
         }
         即使全部数据源失败，也会返回中性分 50，绝不抛出异常中断主流程。
         """
+        now = time.time()
+        if (
+            not force
+            and self._result_cache is not None
+            and (now - self._result_cached_at) < self.config.result_cache_ttl
+        ):
+            return {**self._result_cache, "cached": True}
+
         # 取数（每个都已内部容错）
-        prev_ret = self.get_prev_limitup_avg_return()
+        prev = self.get_prev_limitup_detail()
         blowup = self.get_leader_blowup_rate()
         limit_down = self.get_limit_down_count()
 
         dims = [
-            self._score_prev_return(prev_ret),
+            self._score_prev_return(prev["avg"]),
             self._score_blowup(blowup),
             self._score_limit_down(limit_down),
         ]
 
         # 加权汇总（权重和恒为 1.0，缺失维度以中性分 50 参与，不改变权重结构）
-        total = round(sum(d.weighted for d in dims))
-        total = int(_clamp(total))
+        total = int(_clamp(round(sum(d.weighted for d in dims))))
         available = sum(1 for d in dims if d.available)
         confidence = round(available / len(dims), 2)
         level = self._level_of(total)
 
-        return {
+        dimensions = {
+            d.name: {
+                "raw": d.raw,
+                "score": d.score,
+                "weight": round(d.weight, 3),
+                "weighted": d.weighted,
+                "available": d.available,
+                "desc": d.desc,
+            }
+            for d in dims
+        }
+        # 附加逐票对比明细，让用户看到“昨天的票今天怎么走的”，而不只是一个分数
+        n = self.config.detail_top_n
+        items = prev["items"]
+        dimensions["prev_limitup_return"].update({
+            "count": prev["count"],
+            "up_count": prev["up_count"],
+            "down_count": prev["down_count"],
+            "top_gainers": items[:n],          # 今日涨幅最高的（接力成功）
+            "top_losers": items[-n:][::-1] if len(items) > n else items[::-1][:n],  # 今日跌幅最深的（高位杀跌）
+        })
+        dimensions["leader_blowup_rate"].update({
+            "total": blowup.get("total", 0),
+            "blown": blowup.get("blown", 0),
+            "items": blowup.get("items", [])[:n],   # 龙头今日表现（已按跌幅升序，最惨在前）
+        })
+
+        result = {
             "score": total,
             "level": level,
             "confidence": confidence,
             "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "dimensions": {
-                d.name: {
-                    "raw": d.raw,
-                    "score": d.score,
-                    "weight": round(d.weight, 3),
-                    "weighted": d.weighted,
-                    "available": d.available,
-                    "desc": d.desc,
-                }
-                for d in dims
-            },
+            "cached": False,
+            "dimensions": dimensions,
             "position": PositionManager.decide(total),
         }
+        self._result_cache = result
+        self._result_cached_at = now
+        return result
 
 
 # ==========================================================================

@@ -8,6 +8,7 @@
 # Core Web Framework
 Flask>=3.0.0
 Flask-CORS>=4.0.0          # optional but recommended; enables CORS on /api/*
+waitress>=3.0.0           # production WSGI server (used by run_background.py)
 
 # Data Processing
 pandas>=2.1.0

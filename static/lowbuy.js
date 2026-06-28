@@ -69,6 +69,7 @@ function renderEmotionGate(data) {
         dims.limit_down_count && `跌停 ${dims.limit_down_count.raw != null ? dims.limit_down_count.raw + '家' : 'N/A'}`,
     ].filter(Boolean).join(' · ');
     const confTip = data.confidence < 1 ? ` <span class="eg-conf">(可信度${Math.round(data.confidence * 100)}%)</span>` : '';
+    const cachedTip = data.cached ? ' <span class="eg-cached" title="结果缓存中（约3分钟刷新一次）">·缓存</span>' : '';
 
     bar.innerHTML = `
         <div class="emotion-gate" style="--eg-color:${color};">
@@ -83,9 +84,45 @@ function renderEmotionGate(data) {
                 <span title="单票仓位上限">单票 ≤ <b>${pct(pos.max_single_position)}</b></span>
                 <span class="eg-open ${pos.can_open ? 'ok' : 'no'}">${pos.can_open ? '允许开仓' : '禁止开仓'}</span>
             </div>
-            <div class="eg-dims">${dimText}${confTip}</div>
+            <div class="eg-dims">${dimText}${confTip}${cachedTip}</div>
+            ${buildEmotionDetail(dims)}
         </div>
     `;
+}
+
+// 逐票对比明细：昨日涨停股今日怎么走 + 龙头今日表现
+function buildEmotionDetail(dims) {
+    const prev = dims.prev_limitup_return || {};
+    const leaders = dims.leader_blowup_rate || {};
+    const stockRow = (s) => {
+        const chg = (s.change >= 0 ? '+' : '') + (s.change != null ? s.change.toFixed(2) : '--') + '%';
+        const cls = s.change >= 0 ? 'up' : 'down';
+        return `<span class="eg-stock ${cls}" onclick="analyzeLowBuyByCode('${s.code}')" title="点击分析">
+            <span class="eg-st-name">${s.name || s.code}</span><span class="eg-st-chg">${chg}</span></span>`;
+    };
+    const list = (arr) => (arr && arr.length) ? arr.map(stockRow).join('') : '<span class="eg-empty">—</span>';
+
+    let html = '';
+    if (prev.count != null) {
+        html += `
+        <details class="eg-detail">
+            <summary>昨日涨停 ${prev.count} 只 · 今日 <b class="up">${prev.up_count}涨</b> / <b class="down">${prev.down_count}跌</b>（点开看对比）</summary>
+            <div class="eg-detail-body">
+                <div class="eg-group"><div class="eg-group-t up">🔥 接力领涨</div><div class="eg-stocks">${list(prev.top_gainers)}</div></div>
+                <div class="eg-group"><div class="eg-group-t down">❄️ 高位杀跌</div><div class="eg-stocks">${list(prev.top_losers)}</div></div>
+            </div>
+        </details>`;
+    }
+    if (leaders.items && leaders.items.length) {
+        html += `
+        <details class="eg-detail">
+            <summary>趋势龙头 ${leaders.total || 0} 只 · 今日大面 <b class="down">${leaders.blown || 0}</b> 只（点开看明细）</summary>
+            <div class="eg-detail-body">
+                <div class="eg-group"><div class="eg-stocks">${list(leaders.items)}</div></div>
+            </div>
+        </details>`;
+    }
+    return html;
 }
 
 function renderSentiment(data) {
