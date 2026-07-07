@@ -1774,3 +1774,26 @@ body {
 .ld-note { margin: 0.6rem 0 0; padding: 8px 12px; border-radius: 8px; font-size: 0.82rem; background: rgba(255,255,255,0.06); color: var(--text-secondary, #aab); border-left: 4px solid #607d8b; }
 .ld-note.warn { background: rgba(255,152,0,0.14); border-left-color: #ff9800; color: #ffe0b2; }
 .ld-buy.weak { background: rgba(120,120,120,0.25); color: #bdbdbd; }
+.ld-wts { padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; background: rgba(255,193,7,0.28); color: #ffd54f; font-weight: 700; }
+.ld-sellal { padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; background: rgba(105,240,174,0.22); color: #69f0ae; font-weight: 700; }
+.ld-stale { margin-left: 8px; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; background: rgba(144,164,174,0.25); color: #b0bec5; font-weight: 400; }
+.ld-sell-warn.stock { background: rgba(105,240,174,0.10); border-left-color: #69f0ae; color: #b9f6ca; }
+.ld-sw-detail { display: block; margin-top: 2px; font-size: 0.75rem; opacity: 0.8; }
+.ld-dc .wts { color: #ffd54f; }
+.ld-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ld-note-text { flex: 1 1 60%; min-width: 200px; }
+.ld-bt-btn { flex: 0 0 auto; padding: 4px 12px; border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; background: rgba(66,133,244,0.18); color: #cfe0ff; font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
+.ld-bt-btn:hover:not(:disabled) { background: rgba(66,133,244,0.32); }
+.ld-bt-btn:disabled { opacity: 0.6; cursor: default; }
+.ld-bt-live { flex: 1 1 100%; }
+.bt-status { margin-top: 6px; font-size: 0.8rem; color: #9fb0c0; }
+.bt-status.err { color: #ff8a80; }
+.bt-result { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.05); }
+.bt-head { font-size: 0.8rem; color: #cfe0ff; }
+.bt-concl { margin: 4px 0 6px; font-size: 0.82rem; color: #ffe0b2; }
+.bt-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.bt-table th, .bt-table td { padding: 3px 6px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.bt-table th:first-child, .bt-table td:first-child { text-align: left; }
+.bt-table td.up { color: #ff8a80; }
+.bt-table td.down { color: #69f0ae; }
+.bt-cyc { margin-top: 6px; font-size: 0.78rem; color: #9fb0c0; }

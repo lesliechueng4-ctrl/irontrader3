@@ -45,6 +45,7 @@ _ZT_COLMAP = {
     "seal_amount": ("封板资金", "封单资金"),
     "first_limit_time": ("首次封板时间", "首次涨停时间"),
     "turnover_rate": ("换手率",),
+    "break_count": ("炸板次数",),
 }
 
 
@@ -92,6 +93,7 @@ class SignalBacktest:
                     "seal_amount": float(_pick(row, _ZT_COLMAP["seal_amount"], 0) or 0),
                     "first_limit_time": str(_pick(row, _ZT_COLMAP["first_limit_time"], "")),
                     "turnover_rate": float(_pick(row, _ZT_COLMAP["turnover_rate"], 0) or 0),
+                    "break_count": int(_pick(row, _ZT_COLMAP["break_count"], 0) or 0),
                 })
             return out
         except Exception as exc:

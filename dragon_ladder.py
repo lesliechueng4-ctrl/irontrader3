@@ -91,19 +91,37 @@ class DragonLadder:
     # ------------------------------------------------------------------
     # ② 分歧 / 一致
     # ------------------------------------------------------------------
-    def classify_divergence(self, stock: Dict) -> Dict[str, object]:
-        """返回 {'tag': 一致/分歧/中性, 'buy_hint': bool, 'reason': str}。"""
+    def classify_divergence(self, stock: Dict, prev: Optional[Dict] = None) -> Dict[str, object]:
+        """给单只涨停股打标签。
+
+        Args:
+            stock: 今日涨停池行（可含 break_count/last_limit_time）。
+            prev:  昨日同一只票的涨停池快照行（无则为 None，跨日信号跳过）。
+
+        Returns: {
+            'tag': 一致/分歧/中性,
+            'buy_hint': bool,        # 弱转强接力买点
+            'reason': str,
+            'cross': str,            # 跨日信号：'昨弱今强' / ''（昨日炸板/晚封→今日秒板）
+            'sell_alert': str,       # 个股级"一致加速"减仓提示（空串=无）
+        }
+        """
         cfg = self.config
         turnover = float(stock.get("turnover_rate", 0) or 0)
         limit_count = int(stock.get("limit_count", 1) or 1)
         seal = float(stock.get("seal_amount", 0) or 0)
+        breaks = int(stock.get("break_count", 0) or 0)
         t = _to_minutes(stock.get("first_limit_time"))
 
         early = t is not None and t <= cfg.early_seal_min
         late = t is not None and t >= cfg.late_seal_min
 
         tag, reason = "中性", ""
-        if early and turnover < cfg.low_turnover:
+        if breaks >= 1:
+            # 盘中炸板又回封：分时上有真实分歧换手，属于分歧回封（在池内即收盘回封）
+            tag = "分歧"
+            reason = f"盘中炸板{breaks}次后回封，分歧充分"
+        elif early and turnover < cfg.low_turnover:
             tag = "一致"
             reason = "早盘秒封 + 缩量，情绪一致（接力性价比低）"
         elif turnover >= cfg.high_turnover or late:
@@ -112,9 +130,37 @@ class DragonLadder:
         else:
             reason = "换手适中"
 
-        # 弱转强买点：连板 + 分歧 + 封单仍强
-        buy_hint = bool(tag == "分歧" and limit_count >= 2 and seal >= cfg.buy_hint_min_seal)
-        return {"tag": tag, "buy_hint": buy_hint, "reason": reason}
+        # ---- 跨日信号（需要昨日快照）----
+        cross = ""
+        sell_alert = ""
+        if prev:
+            p_t = _to_minutes(prev.get("first_limit_time"))
+            p_breaks = int(prev.get("break_count", 0) or 0)
+            p_turnover = float(prev.get("turnover_rate", 0) or 0)
+            prev_weak = p_breaks >= 1 or (p_t is not None and p_t >= cfg.late_seal_min)
+
+            # 昨弱今强：昨日炸板/尾盘弱封 → 今日早盘抢筹封板 = 教科书弱转强
+            if prev_weak and early:
+                cross = "昨弱今强"
+                reason = (f"昨日{'炸板' + str(p_breaks) + '次' if p_breaks else '尾盘弱封'}"
+                          f"→今日早盘回封，弱转强超预期")
+
+            # 一致加速（个股级卖点）：高位连板 + 首封较昨大幅提前 + 换手骤降
+            if (limit_count >= 3 and t is not None and p_t is not None
+                    and (p_t - t) >= 60
+                    and p_turnover > 0 and turnover < p_turnover * 0.6):
+                sell_alert = (f"一致加速：首封较昨提前{(p_t - t) // 60}小时+、"
+                              f"换手{p_turnover:.0f}%→{turnover:.0f}%骤降，锁仓一致=兑现窗口临近")
+
+        # 弱转强买点：①连板 + 分歧 + 封单仍强；②跨日"昨弱今强"且封单强（即使今日缩量一字）
+        buy_hint = bool(
+            (tag == "分歧" and limit_count >= 2 and seal >= cfg.buy_hint_min_seal)
+            or (cross == "昨弱今强" and seal >= cfg.buy_hint_min_seal)
+        )
+        if sell_alert:
+            buy_hint = False  # 兑现窗口不给买点
+        return {"tag": tag, "buy_hint": buy_hint, "reason": reason,
+                "cross": cross, "sell_alert": sell_alert}
 
     # ------------------------------------------------------------------
     # ① 题材梯队
@@ -129,7 +175,8 @@ class DragonLadder:
             t if t is not None else 9999,
         )
 
-    def _build_sectors(self, pool: List[Dict]) -> List[Dict]:
+    def _build_sectors(self, pool: List[Dict], prev_map: Optional[Dict[str, Dict]] = None) -> List[Dict]:
+        prev_map = prev_map or {}
         groups: Dict[str, List[Dict]] = {}
         for s in pool:
             sector = (s.get("sector") or "其他").strip() or "其他"
@@ -146,18 +193,22 @@ class DragonLadder:
 
             items = []
             for i, s in enumerate(ranked):
-                div = self.classify_divergence(s)
+                code = str(s.get("code", ""))
+                div = self.classify_divergence(s, prev_map.get(code))
                 items.append({
-                    "code": str(s.get("code", "")),
+                    "code": code,
                     "name": s.get("name", ""),
                     "limit_count": int(s.get("limit_count", 1) or 1),
                     "seal_amount": float(s.get("seal_amount", 0) or 0),
                     "first_limit_time": str(s.get("first_limit_time", "") or ""),
                     "turnover_rate": round(float(s.get("turnover_rate", 0) or 0), 2),
+                    "break_count": int(s.get("break_count", 0) or 0),
                     "role": roles[i] if i < len(roles) else "梯队",
                     "divergence": div["tag"],
                     "buy_hint": div["buy_hint"],
                     "div_reason": div["reason"],
+                    "cross": div["cross"],
+                    "sell_alert": div["sell_alert"],
                 })
             seal_sum = sum(it["seal_amount"] for it in items)
             sectors.append({
@@ -238,7 +289,18 @@ class DragonLadder:
             except Exception:
                 stocks = []
 
-        sectors = self._build_sectors(stocks)
+        # 昨日涨停池快照 → 跨日信号（昨弱今强 / 一致加速）。没有快照就静默跳过。
+        prev_map: Dict[str, Dict] = {}
+        try:
+            snap_fn = getattr(self.fetcher, "get_prev_zt_snapshot", None)
+            if callable(snap_fn):
+                snap = snap_fn()
+                if snap and snap.get("rows"):
+                    prev_map = {str(r.get("code", "")): r for r in snap["rows"]}
+        except Exception as exc:
+            logger.debug(f"读取昨日快照失败: {exc}")
+
+        sectors = self._build_sectors(stocks, prev_map)
         max_height = max((s["max_height"] for s in sectors), default=0)
         promotion = self._promotion()
         sell_warning = self._sell_warning(sectors, max_height)
@@ -268,9 +330,20 @@ class DragonLadder:
         consensus = sum(1 for s in sectors for it in s["stocks"] if it["divergence"] == "一致")
         divergent = sum(1 for s in sectors for it in s["stocks"] if it["divergence"] == "分歧")
         buy_hints = sum(1 for s in sectors for it in s["stocks"] if it["buy_hint"])
+        wts_count = sum(1 for s in sectors for it in s["stocks"] if it.get("cross") == "昨弱今强")
+        sell_alerts = [
+            {"code": it["code"], "name": it["name"], "limit_count": it["limit_count"],
+             "reason": it["sell_alert"]}
+            for s in sectors for it in s["stocks"] if it.get("sell_alert")
+        ]
+
+        # 数据新鲜度（涨停池是否为降级快照）
+        meta = getattr(self.fetcher, "limit_up_pool_meta", None) or {}
 
         result = {
             "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "data_as_of": meta.get("as_of", ""),
+            "data_stale": bool(meta.get("stale", False)),
             "cached": False,
             "spirit": {
                 "limit_up_total": total,
@@ -283,10 +356,12 @@ class DragonLadder:
                 "consensus_count": consensus,
                 "divergent_count": divergent,
                 "buy_hint_count": buy_hints,
+                "wts_count": wts_count,           # 昨弱今强只数（跨日弱转强）
                 "buy_hint_reliable": cycle not in ("弱",),  # 弱周期买点不可靠（回测）
             },
             "signal_note": signal_note,
             "sell_warning": sell_warning,
+            "stock_sell_alerts": sell_alerts,     # 个股级"一致加速"减仓提示
             "sectors": sectors,
         }
         self._cache = result

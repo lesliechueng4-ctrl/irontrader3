@@ -52,6 +52,45 @@ class DivergenceTest(unittest.TestCase):
         d2 = self.dl.classify_divergence(_stock("3", "丙", "A", 1, 8e7, "10:30:00", 18.0))
         self.assertFalse(d2["buy_hint"])
 
+    def test_break_count_forces_divergence(self):
+        # 早盘秒封+缩量本应"一致"，但盘中炸板2次回封 → 分歧
+        s = _stock("4", "丁", "A", 2, 8e7, "09:25:00", 3.0)
+        s["break_count"] = 2
+        d = self.dl.classify_divergence(s)
+        self.assertEqual(d["tag"], "分歧")
+        self.assertIn("炸板2次", d["reason"])
+        self.assertTrue(d["buy_hint"])  # 连板 + 分歧 + 封单强
+
+    def test_cross_weak_to_strong(self):
+        # 昨日炸板尾封 → 今日早盘回封且有承接换手 = 昨弱今强，给买点
+        today = _stock("5", "戊", "A", 2, 1e8, "09:26:00", 9.0)
+        prev = {"first_limit_time": "14:40:00", "break_count": 3, "turnover_rate": 20.0}
+        d = self.dl.classify_divergence(today, prev)
+        self.assertEqual(d["cross"], "昨弱今强")
+        self.assertTrue(d["buy_hint"])
+
+    def test_acceleration_beats_wts(self):
+        # 3板+昨弱今封但缩量一字(买不进、主升末端)：一致加速优先，压掉买点
+        today = _stock("5b", "戊二", "A", 3, 1e8, "09:26:00", 4.0)
+        prev = {"first_limit_time": "14:40:00", "break_count": 3, "turnover_rate": 20.0}
+        d = self.dl.classify_divergence(today, prev)
+        self.assertEqual(d["cross"], "昨弱今强")
+        self.assertTrue(d["sell_alert"])
+        self.assertFalse(d["buy_hint"])
+
+    def test_stock_level_consensus_acceleration_sell(self):
+        # 4板 + 首封较昨提前2小时+ + 换手 22%→6% 骤降 → 个股"一致加速"兑现提示，且不给买点
+        today = _stock("6", "己", "A", 4, 2e8, "09:30:00", 6.0)
+        prev = {"first_limit_time": "13:40:00", "break_count": 0, "turnover_rate": 22.0}
+        d = self.dl.classify_divergence(today, prev)
+        self.assertTrue(d["sell_alert"])
+        self.assertFalse(d["buy_hint"])
+
+    def test_no_prev_snapshot_no_cross_signals(self):
+        d = self.dl.classify_divergence(_stock("7", "庚", "A", 3, 1e8, "09:26:00", 4.0), None)
+        self.assertEqual(d["cross"], "")
+        self.assertEqual(d["sell_alert"], "")
+
 
 class LadderTest(unittest.TestCase):
     def setUp(self):

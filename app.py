@@ -180,6 +180,67 @@ def dragon_ladder():
     result = _get_dragon_ladder().build()
     return jsonify({'success': True, 'data': result})
 
+# ===== 手动"重新回测"：后台线程跑 backtest_study 并累积样本，前端轮询进度 =====
+_BT_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'backtest_samples.csv')
+_BT_STATE = {'running': False, 'progress': '', 'started': None, 'finished': None,
+             'error': None, 'result': None}
+_BT_LOCK = Lock()
+
+
+def _run_backtest_job(days, horizons):
+    import pandas as pd
+    from backtest_study import collect, merge_samples, summarize
+    try:
+        def _cb(i, total, got):
+            _BT_STATE['progress'] = f"{i}/{total}（已收集 {got} 笔）"
+        old = None
+        if os.path.exists(_BT_SAMPLES):
+            try:
+                old = pd.read_csv(_BT_SAMPLES)
+            except Exception:
+                old = None
+        new = collect(days, horizons, progress_cb=_cb)
+        df = merge_samples(old, new)
+        os.makedirs(os.path.dirname(_BT_SAMPLES), exist_ok=True)
+        df.to_csv(_BT_SAMPLES, index=False, encoding='utf-8-sig')
+        added = len(df) - (0 if old is None else len(old))
+        result = summarize(df, horizons)
+        result['added'] = max(added, 0)
+        result['as_of'] = time.strftime('%Y-%m-%d %H:%M')
+        _BT_STATE['result'] = result
+    except Exception as e:
+        logger.error(f"手动回测失败: {e}")
+        _BT_STATE['error'] = str(e)
+    finally:
+        _BT_STATE['running'] = False
+        _BT_STATE['finished'] = time.strftime('%Y-%m-%d %H:%M:%S')
+
+
+@app.route('/api/backtest/rerun', methods=['POST'])
+def backtest_rerun():
+    """手动触发一次回测（后台线程），累积到样本库；前端轮询 /api/backtest/status。"""
+    days = int((request.get_json(silent=True) or {}).get('days', 10))
+    days = max(3, min(days, 30))
+    horizons = [1, 3, 5]
+    with _BT_LOCK:
+        if _BT_STATE['running']:
+            return jsonify({'success': True, 'data': {'running': True, 'progress': _BT_STATE['progress']}})
+        _BT_STATE.update({'running': True, 'progress': '启动中…', 'started': time.strftime('%Y-%m-%d %H:%M:%S'),
+                          'finished': None, 'error': None, 'result': None})
+        Thread(target=_run_backtest_job, args=(days, horizons), daemon=True).start()
+    return jsonify({'success': True, 'data': {'running': True, 'progress': _BT_STATE['progress']}})
+
+
+@app.route('/api/backtest/status')
+def backtest_status():
+    """回测进度/结果轮询。"""
+    return jsonify({'success': True, 'data': {
+        'running': _BT_STATE['running'], 'progress': _BT_STATE['progress'],
+        'started': _BT_STATE['started'], 'finished': _BT_STATE['finished'],
+        'error': _BT_STATE['error'], 'result': _BT_STATE['result'],
+    }})
+
+
 @app.route('/api/stock/<code>')
 def stock_analysis(code):
     """Analyze single stock"""

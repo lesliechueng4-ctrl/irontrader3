@@ -47,9 +47,14 @@ function renderDragonLadder(data) {
         const buy = s.buy_hint
             ? `<span class="ld-buy ${buyReliable ? '' : 'weak'}" title="${buyReliable ? '连板分歧、封单仍强：留意弱转强接力买点' : '弱周期回测占下风，谨慎'}">★买点${buyReliable ? '' : '?'}</span>`
             : '';
+        const wts = s.cross === '昨弱今强'
+            ? `<span class="ld-wts" title="昨日炸板/弱封→今日早盘回封，弱转强超预期">⚡弱转强</span>` : '';
+        const sell = s.sell_alert
+            ? `<span class="ld-sellal" title="${s.sell_alert}">⚠兑现</span>` : '';
+        const brk = s.break_count > 0 ? ` · 炸板${s.break_count}次回封` : '';
         return `<span class="ld-chip ${divCls} ${s.role === '龙头' ? 'lead' : ''}" onclick="analyzeLowBuyByCode('${s.code}')"
-            title="${s.name} ${s.limit_count}板 · 换手${s.turnover_rate}% · ${s.divergence}（${s.div_reason || ''}）点击分析">
-            ${crown}<span class="ld-role">${s.role}</span><span class="ld-name">${s.name}</span><span class="ld-lc">${s.limit_count}板</span>${buy}</span>`;
+            title="${s.name} ${s.limit_count}板 · 换手${s.turnover_rate}%${brk} · ${s.divergence}（${s.div_reason || ''}）点击分析">
+            ${crown}<span class="ld-role">${s.role}</span><span class="ld-name">${s.name}</span><span class="ld-lc">${s.limit_count}板</span>${wts}${buy}${sell}</span>`;
     };
 
     const sectorBlock = (sec) => `
@@ -63,27 +68,111 @@ function renderDragonLadder(data) {
 
     const warnHtml = data.sell_warning
         ? `<div class="ld-sell-warn">⚠️ 卖在一致预警：${data.sell_warning}</div>` : '';
+    const stockAlerts = data.stock_sell_alerts || [];
+    const stockWarnHtml = stockAlerts.length
+        ? `<div class="ld-sell-warn stock">🔔 个股兑现提示：${stockAlerts.map(a =>
+              `<b>${a.name}</b>(${a.limit_count}板)`).join('、')}
+           <span class="ld-sw-detail">${stockAlerts[0].reason}</span></div>` : '';
+    const staleHtml = data.data_stale
+        ? `<span class="ld-stale" title="数据源暂不可用，展示最近一次成功快照">📡 快照 ${data.data_as_of || ''}</span>` : '';
     const cycleColors = { '强': '#43a047', '中': '#fb8c00', '弱': '#e53935', '未知': '#90a4ae' };
     const cyc = sp.cycle || '未知';
-    const noteHtml = data.signal_note
-        ? `<div class="ld-note ${buyReliable === false ? 'warn' : ''}">📊 回测提示：${data.signal_note}</div>` : '';
+    const noteText = data.signal_note
+        ? `📊 回测提示：${data.signal_note}`
+        : '📊 回测提示：点此实时回测，看当前样本下各信号的胜率';
+    const noteHtml = `<div class="ld-note ${buyReliable === false ? 'warn' : ''}">
+            <span class="ld-note-text">${noteText}</span>
+            <button class="ld-bt-btn" onclick="rerunBacktest(this)" title="重新回放历史涨停池、累积样本并统计各信号胜率（约1~3分钟）">🔄 重新回测</button>
+            <div id="bt-live" class="ld-bt-live"></div>
+        </div>`;
 
     el.innerHTML = `
     <div class="ld-card">
         <div class="ld-header">
-            <div class="ld-title">🐉 题材龙头梯队 <span class="ld-cycle" style="background:${cycleColors[cyc]}">${cyc}周期</span></div>
+            <div class="ld-title">🐉 题材龙头梯队 <span class="ld-cycle" style="background:${cycleColors[cyc]}">${cyc}周期</span>${staleHtml}</div>
             <div class="ld-spirit">
                 <span>空间高度 <b>${sp.max_height || 0}</b> 板</span>
                 <span title="昨日涨停股今日仍涨停的比例，赚钱效应/晋级率">晋级率 <b class="${(pr != null && pr >= 0.4) ? 'up' : 'down'}">${prTxt}</b></span>
                 <span>涨停 <b>${sp.limit_up_total || 0}</b> · 题材 ${sp.sector_count || 0}</span>
-                <span class="ld-dc">一致 <b class="con">${sp.consensus_count || 0}</b> / 分歧 <b class="div">${sp.divergent_count || 0}</b> / 买点 <b class="buy">${sp.buy_hint_count || 0}</b></span>
+                <span class="ld-dc">一致 <b class="con">${sp.consensus_count || 0}</b> / 分歧 <b class="div">${sp.divergent_count || 0}</b> / 买点 <b class="buy">${sp.buy_hint_count || 0}</b>${sp.wts_count ? ` / <b class="wts">⚡${sp.wts_count}</b>` : ''}</span>
             </div>
         </div>
         ${noteHtml}
         ${warnHtml}
+        ${stockWarnHtml}
         <div class="ld-sectors">${sectors.slice(0, 15).map(sectorBlock).join('') || '<div class="eg-empty">暂无涨停数据</div>'}</div>
-        <div class="ld-legend">👑龙头 · <span class="ld-k div">分歧</span>(关注买点) · <span class="ld-k con">一致</span>(缩量不追) · ★弱转强买点 · 断层=龙头与龙二高度差≥2</div>
+        <div class="ld-legend">👑龙头 · <span class="ld-k div">分歧</span>(关注买点) · <span class="ld-k con">一致</span>(缩量不追) · ★买点 · ⚡昨弱今强(昨炸板今回封) · ⚠兑现(一致加速) · 断层=龙头与龙二高度差≥2</div>
     </div>`;
+}
+
+// ========== 手动"重新回测"（后台跑，前端轮询进度）==========
+let _btPoll = null;
+async function rerunBacktest(btn) {
+    const live = document.getElementById('bt-live');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 回测中…'; }
+    if (live) live.innerHTML = '<div class="bt-status">正在启动回测（回放历史涨停池 + 拉价格，约 1~3 分钟）…</div>';
+    try {
+        await fetch('/api/backtest/rerun', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days: 10 })
+        });
+    } catch (e) {
+        if (live) live.innerHTML = `<div class="bt-status err">启动失败：${e.message}</div>`;
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 重新回测'; }
+        return;
+    }
+    if (_btPoll) clearInterval(_btPoll);
+    _btPoll = setInterval(() => pollBacktest(btn), 3000);
+    pollBacktest(btn);
+}
+
+async function pollBacktest(btn) {
+    const live = document.getElementById('bt-live');
+    try {
+        const r = await (await fetch('/api/backtest/status')).json();
+        const d = r.data || {};
+        if (d.running) {
+            if (live) live.innerHTML = `<div class="bt-status">回测中… 进度 ${d.progress || ''}</div>`;
+            return;
+        }
+        if (_btPoll) { clearInterval(_btPoll); _btPoll = null; }
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 重新回测'; }
+        if (d.error) {
+            if (live) live.innerHTML = `<div class="bt-status err">回测失败：${d.error}<br>（多为数据源暂不可用，稍后重试）</div>`;
+            return;
+        }
+        if (d.result) renderBacktestResult(d.result);
+        else if (live) live.innerHTML = '<div class="bt-status">暂无结果，请重试</div>';
+    } catch (e) {
+        if (_btPoll) { clearInterval(_btPoll); _btPoll = null; }
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 重新回测'; }
+        if (live) live.innerHTML = `<div class="bt-status err">状态查询失败：${e.message}</div>`;
+    }
+}
+
+function renderBacktestResult(res) {
+    const live = document.getElementById('bt-live');
+    if (!live) return;
+    if (!res.total) { live.innerHTML = `<div class="bt-status err">${res.conclusion || '样本为空'}</div>`; return; }
+    const pct = (w) => (w == null) ? '--' : (Math.round(w * 100) + '%');
+    const rows = (res.cross || []).map(c => `
+        <tr>
+            <td>${c.signal}</td>
+            <td>${c.n}</td>
+            <td class="${(c.win != null && c.win >= 0.5) ? 'up' : 'down'}">${pct(c.win)}</td>
+            <td class="${(c.avg != null && c.avg >= 0) ? 'up' : 'down'}">${c.avg == null ? '--' : c.avg + '%'}</td>
+        </tr>`).join('');
+    const cyc = res.cycles || {};
+    const cycRow = ['强', '中', '弱'].map(k => {
+        const a = cyc[k] || {}; return `${k}:${a.n || 0}样本/${pct(a.win)}`;
+    }).join(' · ');
+    live.innerHTML = `
+        <div class="bt-result">
+            <div class="bt-head">✅ 实时回测完成 · ${res.as_of || ''} · 累计 <b>${res.total}</b> 笔 / ${res.days} 日${res.added ? `（本轮新增 ${res.added}）` : ''}</div>
+            <div class="bt-concl">${res.conclusion || ''}</div>
+            <table class="bt-table"><thead><tr><th>信号</th><th>样本</th><th>胜率</th><th>均值(持有${res.h}日)</th></tr></thead><tbody>${rows}</tbody></table>
+            <div class="bt-cyc">买点★分周期胜率：${cycRow}</div>
+        </div>`;
 }
 
 // ========== 市场情绪（统一卡片：情绪闸为主 + 老情绪指标作数据行）==========

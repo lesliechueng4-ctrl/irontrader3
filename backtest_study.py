@@ -42,6 +42,35 @@ def _div_tag(turnover, limit_count, seal, t_min, low_turn, high_turn,
     return tag, buy
 
 
+def _cycle_bucket(rate: Optional[float]) -> Optional[str]:
+    """晋级率 → 强/中/弱 分档（与 dragon_ladder 实盘阈值一致）。"""
+    if rate is None:
+        return None
+    return "强" if rate >= 0.4 else ("中" if rate >= 0.2 else "弱")
+
+
+def _real_promotion(date_str: str, limit_pct: float = 9.5) -> Optional[float]:
+    """实盘口径晋级率：昨日涨停股今日仍涨停比例（与 dragon_ladder._promotion 同源同算法）。
+
+    回测样本同时保存代理口径(promo)与实盘口径(promo_real)，用于校准两套周期分档。
+    """
+    try:
+        import akshare as ak
+        df = ak.stock_zt_pool_previous_em(date=date_str)
+        if df is None or df.empty:
+            return None
+        col = next((c for c in df.columns if "涨跌幅" in str(c) or "涨幅" in str(c)), None)
+        if not col:
+            return None
+        chg = pd.to_numeric(df[col], errors="coerce").dropna()
+        if not len(chg):
+            return None
+        return round(float((chg >= limit_pct).mean()), 3)
+    except Exception as exc:
+        logger.debug(f"取 {date_str} 实盘晋级率失败: {exc}")
+        return None
+
+
 def _agg(xs: List[float]) -> Dict[str, object]:
     xs = [x for x in xs if x is not None]
     if not xs:
@@ -50,7 +79,7 @@ def _agg(xs: List[float]) -> Dict[str, object]:
             "avg": round(statistics.mean(xs), 2), "med": round(statistics.median(xs), 2)}
 
 
-def collect(days: int, horizons: List[int], max_per_day: int = 20) -> pd.DataFrame:
+def collect(days: int, horizons: List[int], max_per_day: int = 20, progress_cb=None) -> pd.DataFrame:
     bt = SignalBacktest()
     ladder = bt.ladder
     end_dt = datetime.now()
@@ -62,6 +91,11 @@ def collect(days: int, horizons: List[int], max_per_day: int = 20) -> pd.DataFra
     prev_zt_count = None
     for di, d in enumerate(signal_days, 1):
         print(f"  进度 {di}/{len(signal_days)} {d} (已收集 {len(rows)} 笔)", flush=True)
+        if progress_cb:
+            try:
+                progress_cb(di, len(signal_days), len(rows))
+            except Exception:
+                pass
         pool = bt.historical_zt_pool(d)
         if not pool:
             prev_zt_count = prev_zt_count  # 不更新
@@ -73,6 +107,7 @@ def collect(days: int, horizons: List[int], max_per_day: int = 20) -> pd.DataFra
         if promo is None:
             continue
         cycle = "强" if promo >= 0.4 else ("中" if promo >= 0.2 else "弱")
+        promo_real = _real_promotion(d)   # 实盘口径，用于两套周期分档的对照校准
 
         sectors = ladder._build_sectors(pool)
         d_iso = pd.to_datetime(d).strftime("%Y-%m-%d")
@@ -91,9 +126,12 @@ def collect(days: int, horizons: List[int], max_per_day: int = 20) -> pd.DataFra
                 rows.append({
                     "date": d_iso, "code": it["code"], "name": it["name"],
                     "cycle": cycle, "promo": round(promo, 3),
+                    "promo_real": promo_real,
+                    "cycle_real": _cycle_bucket(promo_real),
                     "role": it["role"], "divergence": it["divergence"], "buy_hint": it["buy_hint"],
                     "turnover": it["turnover_rate"], "limit_count": it["limit_count"],
                     "seal": it.get("seal_amount", 0),
+                    "break_count": int(it.get("break_count", 0) or 0),
                     "t_min": _to_minutes(it["first_limit_time"]),
                     **{f"ret_{h}": rets[h] for h in horizons},
                 })
@@ -138,6 +176,14 @@ def report(df: pd.DataFrame, horizons: List[int]):
         wr = f"{a['win']*100:.1f}%" if a["win"] is not None else "--"
         print(f"分歧·{cyc:<3}{a['n']:>6}{wr:>8}{str(a['avg']):>8}{str(a['med']):>8}")
 
+    if "promo_real" in df.columns:
+        sub = df.dropna(subset=["promo", "promo_real"]).drop_duplicates("date")
+        if len(sub):
+            agree = float((sub["promo"].map(_cycle_bucket) == sub["promo_real"].map(_cycle_bucket)).mean())
+            print("\n=== ①b 周期口径校准 ===")
+            print(f"覆盖 {len(sub)} 日：代理口径(今连板/昨涨停) vs 实盘口径(昨涨停今仍板) "
+                  f"强/中/弱同档率 {agree * 100:.0f}%")
+
     print(f"\n=== ③ 调参 · 换手分歧阈值 high_turnover 扫描（buy_hint 持有{h}日）===")
     print(f"{'阈值%':>6}{'样本':>6}{'胜率':>8}{'平均%':>8}")
     for ht in [8, 10, 12, 15, 18, 22]:
@@ -150,6 +196,51 @@ def report(df: pd.DataFrame, horizons: List[int]):
         a = _agg(rets)
         wr = f"{a['win']*100:.1f}%" if a["win"] is not None else "--"
         print(f"{ht:>6}{a['n']:>6}{wr:>8}{str(a['avg']):>8}")
+
+
+def _pct(w) -> str:
+    return f"{w * 100:.0f}%" if w is not None else "--"
+
+
+def summarize(df: Optional[pd.DataFrame], horizons: List[int]) -> Dict[str, object]:
+    """把样本库压成一段可直接显示的结论（供前端"重新回测"按钮渲染）。"""
+    if df is None or df.empty:
+        return {"total": 0, "days": 0, "h": None, "cross": [], "cycles": {},
+                "conclusion": "样本库为空（取数失败或休市区间）"}
+    df = df.copy()
+    if "buy_hint" in df.columns and df["buy_hint"].dtype == object:
+        df["buy_hint"] = df["buy_hint"].astype(str).str.lower().isin(["true", "1", "1.0"])
+
+    h = 3 if 3 in horizons else horizons[-1]
+    col = f"ret_{h}"
+    masks = {
+        "买点★": df["buy_hint"] == True,
+        "分歧": df["divergence"] == "分歧",
+        "一致": df["divergence"] == "一致",
+        "龙头": df["role"] == "龙头",
+        "全部涨停": df["code"].notna(),
+    }
+    cross = []
+    for name, mask in masks.items():
+        a = _agg(df.loc[mask, col].tolist()) if col in df.columns else _agg([])
+        cross.append({"signal": name, "n": a["n"], "win": a["win"], "avg": a["avg"], "med": a["med"]})
+
+    cycles = {}
+    bh = df[df["buy_hint"] == True]
+    for cyc in ["强", "中", "弱"]:
+        a = _agg(bh.loc[bh["cycle"] == cyc, col].tolist()) if col in bh.columns else _agg([])
+        cycles[cyc] = {"n": a["n"], "win": a["win"], "avg": a["avg"]}
+
+    bh_row = next((c for c in cross if c["signal"] == "买点★"), None)
+    con_row = next((c for c in cross if c["signal"] == "一致"), None)
+    parts = []
+    if bh_row and bh_row["n"]:
+        parts.append(f"买点★ {bh_row['n']}样本 胜率{_pct(bh_row['win'])}、均{bh_row['avg']}%")
+    if con_row and con_row["n"]:
+        parts.append(f"强势一致 胜率{_pct(con_row['win'])}、均{con_row['avg']}%")
+    conclusion = (f"持有{h}日：" + "；".join(parts)) if parts else "样本不足，暂无结论"
+    return {"total": int(len(df)), "days": int(df["date"].nunique()), "h": h,
+            "cross": cross, "cycles": cycles, "conclusion": conclusion}
 
 
 def merge_samples(old: Optional[pd.DataFrame], new: Optional[pd.DataFrame]) -> pd.DataFrame:
