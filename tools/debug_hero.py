@@ -1,4 +1,8 @@
-"""测试逆势英雄扫描器是否能正常导入和初始化"""
+"""测试逆势英雄扫描器是否能正常导入和初始化（临时调试脚本）"""
+
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 try:
     print("1. 正在导入模块...")

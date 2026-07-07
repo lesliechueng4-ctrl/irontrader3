@@ -1,4 +1,8 @@
-"""测试新浪接口是否可用"""
+"""测试新浪接口是否可用（临时调试脚本，从项目根目录的模块导入）"""
+
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 print("=" * 60)
 print("测试新浪财经接口")
