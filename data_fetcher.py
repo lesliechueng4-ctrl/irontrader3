@@ -68,7 +68,10 @@ import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+import json
+import threading
 import time
+from pathlib import Path
 from cache_manager import CacheManager
 from data_source_client import DataSourceClient
 
@@ -80,6 +83,13 @@ class DataFetcher:
         # 使用新的缓存管理器（两级缓存：内存 + 文件）
         self.cache_manager = CacheManager(cache_dir="cache")
         self.source_client = DataSourceClient()
+        # 数据源故障防护：失败冷却（负缓存）+ 同键请求去重（防击穿）
+        self._fail_until: Dict[str, float] = {}
+        self._pool_lock = threading.Lock()
+        # 最近一次涨停池数据的元信息（as_of/stale），供上层展示数据新鲜度
+        self.limit_up_pool_meta: Dict[str, object] = {}
+
+    FAIL_COOLDOWN = 60  # 秒：外部源失败后的冷却期，期间直接走降级不打网络
 
     @staticmethod
     def _normalize_code(code: str) -> str:
@@ -359,8 +369,14 @@ class DataFetcher:
                 logger.warning(f"[FAIL] {source_name}获取失败: {e}")
                 continue
         
-        # 所有数据源都失败
-        logger.warning("[WARNING] 所有数据源获取上证指数失败，返回默认值")
+        # 所有数据源都失败：优先用 1 小时内的旧数据降级（标 stale），
+        # 绝不能返回 current=0 的假值——它会被下游误读成"暴跌/远离MA5"。
+        stale = self.cache_manager.get_stale(cache_key, max_age=3600)
+        if stale:
+            data, age = stale
+            logger.warning(f"[DEGRADED] 上证指数使用 {age / 60:.0f} 分钟前的旧数据")
+            return {**data, 'stale': True}
+        logger.warning("[WARNING] 所有数据源获取上证指数失败（无可用旧数据）")
         return {
             'code': '000001',
             'name': '上证指数',
@@ -436,8 +452,20 @@ class DataFetcher:
             }
         """
         realtime = self.get_index_realtime()
+
+        # 实时指数不可用时必须走 error 分支：current=0 混进 MA5 计算会把
+        # 断网伪装成"偏离MA5 100%·单边下跌"，触发错误的空仓信号。
+        if realtime.get('error') or not realtime.get('current'):
+            return {
+                'current': 0,
+                'ma5': 0,
+                'distance_pct': 0,
+                'above_ma5': False,
+                'error': realtime.get('error', '指数实时数据不可用')
+            }
+
         history = self.get_index_history(days=10)
-        
+
         if history.empty:
             return {
                 'current': realtime['current'],
@@ -460,15 +488,29 @@ class DataFetcher:
         }
     
     def get_limit_up_pool(self, force_refresh: bool = False) -> List[Dict]:
-        """Fetch the current limit-up pool with normalized board metadata."""
+        """Fetch the current limit-up pool with normalized board metadata.
+
+        并发请求只放一个线程真正取数（防击穿）；外部源失败后进入冷却期，
+        期间直接用最近一次成功数据/当日快照降级，避免日志风暴与重复重试。
+        """
         cache_key = "limit_up_pool"
 
         if not force_refresh:
             cached = self._get_cache(cache_key)
             if cached:
-                logger.info(f"Loaded {len(cached)} limit-up stocks from cache")
                 return cached
 
+        with self._pool_lock:
+            # 双重检查：等锁期间可能已有线程取完
+            if not force_refresh:
+                cached = self._get_cache(cache_key)
+                if cached:
+                    return cached
+            if time.time() < self._fail_until.get(cache_key, 0.0):
+                return self._limit_up_pool_fallback(cache_key, "冷却期内")
+            return self._fetch_limit_up_pool(cache_key)
+
+    def _fetch_limit_up_pool(self, cache_key: str) -> List[Dict]:
         columns = {
             'code': '\u4ee3\u7801',
             'name': '\u540d\u79f0',
@@ -483,6 +525,8 @@ class DataFetcher:
             'sector': '\u6240\u5c5e\u884c\u4e1a',
             'sector_alt': '\u884c\u4e1a',
             'turnover_rate': '\u6362\u624b\u7387',
+            'break_count': '\u70b8\u677f\u6b21\u6570',
+            'last_limit_time': '\u6700\u540e\u5c01\u677f\u65f6\u95f4',
         }
 
         def pick_value(row, *keys, default=None):
@@ -520,6 +564,10 @@ class DataFetcher:
                         'sector': str(pick_value(row, columns['sector'], columns['sector_alt'], default='other')),
                         'board_type': board_type,
                         'limit_up_threshold': self._get_limit_up_threshold(stock_code),
+                        'break_count': int(pick_value(row, columns['break_count'], default=0) or 0),
+                        'last_limit_time': self._normalize_limit_time(
+                            pick_value(row, columns['last_limit_time'], default='')
+                        ),
                     })
                 except Exception as e:
                     logger.warning(f"Failed to parse limit-up row {idx + 1}: {e}")
@@ -527,16 +575,86 @@ class DataFetcher:
 
             logger.info(f"Parsed {len(result)} limit-up stocks")
             self._set_cache(cache_key, result)
+            self._write_zt_snapshot(result)
+            self._fail_until.pop(cache_key, None)
+            self.limit_up_pool_meta = {
+                'as_of': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'stale': False, 'source': 'live',
+            }
             return result
         except Exception as e:
             logger.warning(f"Failed to fetch limit-up pool: {e}")
-            import traceback
-            traceback.print_exc()
-            cached = self._get_cache(cache_key)
-            if cached:
-                logger.warning(f"Returning stale limit-up cache with {len(cached)} rows")
-                return cached
-            return []
+            logger.debug("limit-up pool fetch traceback", exc_info=True)
+            self._fail_until[cache_key] = time.time() + self.FAIL_COOLDOWN
+            return self._limit_up_pool_fallback(cache_key, str(e))
+
+    def _limit_up_pool_fallback(self, cache_key: str, reason: str = "") -> List[Dict]:
+        """数据源不可用时的降级链：过期缓存 → 当日/最近快照 → 空列表。"""
+        stale = self.cache_manager.get_stale(cache_key)
+        if stale:
+            data, age = stale
+            as_of = datetime.fromtimestamp(time.time() - age).strftime('%Y-%m-%d %H:%M:%S')
+            self.limit_up_pool_meta = {'as_of': as_of, 'stale': True, 'source': 'cache'}
+            logger.info(f"涨停池降级：使用 {age / 60:.0f} 分钟前的缓存（{len(data)} 只，原因: {reason}）")
+            return data
+        snap = self.load_zt_snapshot()
+        if snap and snap.get('rows'):
+            self.limit_up_pool_meta = {'as_of': snap.get('as_of', ''), 'stale': True, 'source': 'snapshot'}
+            logger.info(f"涨停池降级：使用快照 {snap.get('as_of', '')}（{len(snap['rows'])} 只）")
+            return snap['rows']
+        self.limit_up_pool_meta = {'as_of': '', 'stale': True, 'source': 'none'}
+        return []
+
+    # ---- 涨停池日快照：断网降级 + 跨日对比（昨炸今封/首封提前）的数据基础 ----
+
+    def _write_zt_snapshot(self, rows: List[Dict]):
+        """把当日涨停池落盘为 cache/zt_pool_YYYYMMDD.json，只保留最近 10 份。"""
+        try:
+            snap_dir = Path(self.cache_manager.cache_dir)
+            today = datetime.now().strftime('%Y%m%d')
+            payload = {
+                'date': today,
+                'as_of': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'rows': rows,
+            }
+            (snap_dir / f"zt_pool_{today}.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+            old = sorted(snap_dir.glob('zt_pool_*.json'))[:-10]
+            for f in old:
+                f.unlink(missing_ok=True)
+        except Exception as e:
+            logger.debug(f"写涨停池快照失败: {e}")
+
+    def load_zt_snapshot(self, date_str: Optional[str] = None) -> Optional[Dict]:
+        """读指定日（默认最近一份）的涨停池快照，返回 {'date','as_of','rows'} 或 None。"""
+        try:
+            snap_dir = Path(self.cache_manager.cache_dir)
+            if date_str:
+                path = snap_dir / f"zt_pool_{date_str}.json"
+                if not path.exists():
+                    return None
+            else:
+                files = sorted(snap_dir.glob('zt_pool_*.json'))
+                if not files:
+                    return None
+                path = files[-1]
+            return json.loads(path.read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.debug(f"读涨停池快照失败: {e}")
+            return None
+
+    def get_prev_zt_snapshot(self) -> Optional[Dict]:
+        """最近一份【今天以前】的涨停池快照（跨日弱转强/一致加速对比用）。"""
+        try:
+            today = datetime.now().strftime('%Y%m%d')
+            files = sorted(Path(self.cache_manager.cache_dir).glob('zt_pool_*.json'))
+            prev = [f for f in files if f.stem.rsplit('_', 1)[-1] < today]
+            if not prev:
+                return None
+            return json.loads(prev[-1].read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.debug(f"读昨日涨停池快照失败: {e}")
+            return None
 
     def _get_sina_stock_data(self, code: str) -> Dict:
         """Directly fetch realtime quotes from Sina with board-aware metadata."""

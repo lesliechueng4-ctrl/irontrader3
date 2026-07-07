@@ -598,6 +598,29 @@ class MarketEmotionFilter:
             "items": blowup.get("items", []),  # 龙头池全部成员今日表现（按跌幅升序，最惨在前）
         })
 
+        # 全维度失效（断网等）：不能拿中性50分照常发仓位指令——
+        # 优先退回上一次成功结果（标 stale），实在没有则明确"数据不足"降级。
+        if available == 0:
+            if self._result_cache is not None and self._result_cache.get("confidence", 0) > 0:
+                logger.warning("情绪数据源全部失效，退回上次结果（stale）")
+                return {**self._result_cache, "cached": True, "stale": True}
+            degraded = {
+                "score": total,
+                "level": level,
+                "confidence": 0.0,
+                "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "cached": False,
+                "degraded": True,
+                "dimensions": dimensions,
+                "position": {
+                    "level": "未知", "action": "数据不足，维持现有仓位，勿按指令开新仓",
+                    "max_total_position": 0.0, "max_single_position": 0.0,
+                    "note": "全部数据源不可用，本指令为降级保护",
+                },
+            }
+            # 不写入 result_cache，避免把降级结果当正常结果缓存 3 分钟
+            return degraded
+
         result = {
             "score": total,
             "level": level,

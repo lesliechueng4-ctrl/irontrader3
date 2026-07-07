@@ -105,38 +105,63 @@ class CacheManager:
             缓存数据，如果不存在或已过期则返回None
         """
         # 1. 尝试从内存缓存获取
+        # 注意：过期条目不删除——保留给 get_stale() 做数据源故障时的降级回退
         if key in self.memory_cache:
             data, timestamp = self.memory_cache[key]
             ttl = self._get_cache_ttl(key)
-            
+
             if time.time() - timestamp < ttl:
                 return data
-            else:
-                # 内存缓存已过期，删除
-                del self.memory_cache[key]
-        
+
         # 2. 尝试从文件缓存获取
         cache_file = self._get_cache_file_path(key)
         if cache_file.exists():
             try:
                 with open(cache_file, 'rb') as f:
                     cached_data = pickle.load(f)
-                
+
                 data = cached_data['data']
                 timestamp = cached_data['timestamp']
                 ttl = self._get_cache_ttl(key)
-                
+
                 if time.time() - timestamp < ttl:
                     # 文件缓存有效，加载到内存缓存
                     self.memory_cache[key] = (data, timestamp)
                     return data
-                else:
-                    # 文件缓存已过期，删除文件
-                    cache_file.unlink()
             except Exception as e:
                 print(f"读取缓存文件失败 {key}: {e}")
-        
+
         return None
+
+    def get_stale(self, key: str, max_age: Optional[float] = None):
+        """忽略 TTL 取最后一次成功的数据（数据源故障时降级用）。
+
+        Args:
+            key: 缓存键名
+            max_age: 最大可接受年龄（秒），None 表示当天内不限
+
+        Returns:
+            (data, age_seconds) 或 None
+        """
+        candidate = None
+        if key in self.memory_cache:
+            candidate = self.memory_cache[key]
+        else:
+            cache_file = self._get_cache_file_path(key)
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'rb') as f:
+                        cached_data = pickle.load(f)
+                    candidate = (cached_data['data'], cached_data['timestamp'])
+                except Exception as e:
+                    print(f"读取过期缓存失败 {key}: {e}")
+        if candidate is None:
+            return None
+        data, timestamp = candidate
+        age = time.time() - timestamp
+        if max_age is not None and age > max_age:
+            return None
+        return data, age
     
     def set(self, key: str, data: Any):
         """设置缓存数据
