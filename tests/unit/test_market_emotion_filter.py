@@ -1,6 +1,9 @@
 """MarketEmotionFilter 单元测试（全程 mock，不依赖网络）。"""
 
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -12,6 +15,20 @@ from market_emotion_filter import (
     PositionManager,
     _linear_map,
 )
+
+# 测试期间龙头池落盘重定向到临时目录，避免污染真实 cache/leader_pool.json
+_TMP = tempfile.TemporaryDirectory()
+_ORIG_POOL_FILE = MarketEmotionFilter._leader_pool_file
+
+
+def setUpModule():
+    MarketEmotionFilter._leader_pool_file = (
+        lambda self: Path(_TMP.name) / "leader_pool.json")
+
+
+def tearDownModule():
+    MarketEmotionFilter._leader_pool_file = _ORIG_POOL_FILE
+    _TMP.cleanup()
 
 
 class _FakeFetcher:
@@ -123,6 +140,54 @@ class LeaderPoolTest(unittest.TestCase):
         self.assertEqual(blowup["total"], 3)
         self.assertEqual(blowup["blown"], 2)
         self.assertAlmostEqual(blowup["rate"], 2 / 3, places=3)
+
+
+class DegradedPathTest(unittest.TestCase):
+    """数据源故障时的三层降级：旧快照 → 落盘龙头池 → 逐票实时。"""
+
+    def test_spot_stale_fallback(self):
+        # 快照源挂了，但 5 分钟前的旧快照(<30min)应被降级复用，而不是返回 None
+        flt = MarketEmotionFilter(data_fetcher=_FakeFetcher())
+        df = _spot_df()
+        flt._spot_cache = df
+        flt._spot_cached_at = time.time() - 300  # 已超 spot_cache_ttl(120s)
+        with patch.object(mef.ak, "stock_zh_a_spot_em", side_effect=Exception("network down")):
+            got = flt._get_spot_snapshot()
+        self.assertIs(got, df)
+
+    def test_blowup_realtime_fallback_when_spot_dead(self):
+        # 快照彻底不可用 → 逐票实时行情兜底，大面率不再 N/A
+        live = {"600001": -8.0, "600002": 2.0, "600005": -7.5}
+        fetcher = _FakeFetcher()
+        fetcher.get_stock_realtime = lambda code: {
+            "code": code, "name": "X", "current": 10.0, "change_pct": live[code]}
+        flt = MarketEmotionFilter(
+            data_fetcher=fetcher,
+            config=EmotionConfig(leader_pool_size=3, leader_workers=2, big_loss_pct=-7.0),
+        )
+        flt._leader_pool_cache = list(live)
+        flt._leader_pool_cached_at = time.time()
+        with patch.object(flt, "_get_spot_snapshot", return_value=None):
+            blowup = flt.get_leader_blowup_rate()
+        self.assertEqual(blowup["total"], 3)
+        self.assertEqual(blowup["blown"], 2)
+        self.assertAlmostEqual(blowup["rate"], 2 / 3, places=3)
+
+    def test_leader_pool_persist_and_restore(self):
+        # 构建成功后落盘；"重启"(新实例)且快照挂掉时，从落盘文件恢复同一池子
+        fetcher = _FakeFetcher({"600001": 20.0, "600002": 50.0, "600005": 35.0})
+        cfg = EmotionConfig(leader_pool_size=3, leader_workers=2)
+        flt = MarketEmotionFilter(data_fetcher=fetcher, config=cfg)
+        with patch.object(mef.ak, "stock_zh_a_spot_em", return_value=_spot_df()):
+            pool = flt._build_leader_pool(force=True)
+        self.assertTrue(pool)
+
+        flt2 = MarketEmotionFilter(data_fetcher=fetcher, config=cfg)
+        with patch.object(mef.ak, "stock_zh_a_spot_em", side_effect=Exception("down")):
+            pool2 = flt2._build_leader_pool()
+        self.assertEqual(pool2, pool)
+        # 指标(近期涨幅/昨日走势)也一并恢复
+        self.assertIn(pool[0], flt2._leader_metrics)
 
 
 class PrevLimitupDetailTest(unittest.TestCase):

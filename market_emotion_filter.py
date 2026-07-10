@@ -32,11 +32,13 @@
 
 from __future__ import annotations
 
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -168,10 +170,12 @@ class MarketEmotionFilter:
     def _today_str() -> str:
         return datetime.now().strftime("%Y%m%d")
 
+    SPOT_STALE_MAX = 1800  # 秒：快照源失败时，最多接受多旧的过期快照（大面率分钟级误差可接受）
+
     def _get_spot_snapshot(self, force: bool = False) -> Optional[pd.DataFrame]:
         """获取全 A 实时快照（含 代码/名称/涨跌幅/换手率），带 TTL 缓存。
 
-        失败返回 None，由上层降级处理。
+        取数失败时退回 30 分钟内的过期快照（降级），彻底没有才返回 None。
         """
         now = time.time()
         if (
@@ -181,19 +185,22 @@ class MarketEmotionFilter:
         ):
             return self._spot_cache
 
-        if ak is None:
-            return None
-        try:
-            df = ak.stock_zh_a_spot_em()
-            if df is None or df.empty:
+        if ak is not None:
+            try:
+                df = ak.stock_zh_a_spot_em()
+                if df is not None and not df.empty:
+                    self._spot_cache = df
+                    self._spot_cached_at = now
+                    return df
                 logger.warning("全A快照为空")
-                return None
-            self._spot_cache = df
-            self._spot_cached_at = now
-            return df
-        except Exception as exc:
-            logger.warning(f"获取全A快照失败: {exc}")
-            return None
+            except Exception as exc:
+                logger.warning(f"获取全A快照失败: {exc}")
+
+        # 降级：手里的过期快照好过没有
+        if self._spot_cache is not None and (now - self._spot_cached_at) < self.SPOT_STALE_MAX:
+            logger.info(f"全A快照降级：使用 {(now - self._spot_cached_at) / 60:.0f} 分钟前的旧快照")
+            return self._spot_cache
+        return None
 
     @staticmethod
     def _find_col(df: pd.DataFrame, *keywords: str) -> Optional[str]:
@@ -326,6 +333,18 @@ class MarketEmotionFilter:
         ):
             return self._leader_pool_cache
 
+        # 内存里没有（如刚重启）→ 先从落盘文件恢复：TTL 内直接用；
+        # 过期也先装进内存，作为后续重建失败时的降级底座。
+        if self._leader_pool_cache is None:
+            saved = self._load_leader_pool_file()
+            if saved and saved.get("leaders"):
+                self._leader_pool_cache = [str(c) for c in saved["leaders"]]
+                self._leader_metrics = saved.get("metrics") or {}
+                self._leader_pool_cached_at = float(saved.get("ts", 0))
+                if not force and (now - self._leader_pool_cached_at) < self.config.leader_pool_cache_ttl:
+                    logger.info(f"龙头池从落盘文件恢复（{len(self._leader_pool_cache)} 只）")
+                    return self._leader_pool_cache
+
         spot = self._get_spot_snapshot()
         if spot is None:
             return self._leader_pool_cache or []
@@ -389,11 +408,39 @@ class MarketEmotionFilter:
             self._leader_pool_cache = leaders
             self._leader_metrics = {c: metrics[c] for c in leaders}  # 仅保留入选龙头的指标
             self._leader_pool_cached_at = now
+            self._save_leader_pool_file()
             logger.info(f"龙头池构建完成，共 {len(leaders)} 只")
             return leaders
         except Exception as exc:
             logger.warning(f"构建龙头池失败: {exc}")
             return self._leader_pool_cache or []
+
+    # ---- 龙头池落盘：重启/数据源故障时不丢池子（构建一次成本很高）----
+
+    def _leader_pool_file(self) -> Path:
+        cache_dir = getattr(getattr(self.fetcher, "cache_manager", None), "cache_dir", "cache")
+        return Path(cache_dir) / "leader_pool.json"
+
+    def _save_leader_pool_file(self):
+        try:
+            payload = {
+                "date": self._today_str(), "ts": self._leader_pool_cached_at,
+                "leaders": self._leader_pool_cache, "metrics": self._leader_metrics,
+            }
+            self._leader_pool_file().write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.debug(f"龙头池落盘失败: {exc}")
+
+    def _load_leader_pool_file(self) -> Optional[Dict]:
+        try:
+            path = self._leader_pool_file()
+            if not path.exists():
+                return None
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug(f"读取龙头池落盘文件失败: {exc}")
+            return None
 
     def get_leader_blowup_rate(self) -> Dict[str, object]:
         """趋势龙头池今日"大面率"。
@@ -412,55 +459,74 @@ class MarketEmotionFilter:
         if not leaders:
             return result
 
-        spot = self._get_spot_snapshot()
-        if spot is None:
+        # 今日涨跌来源：全A快照（含过期降级）→ 逐票实时行情兜底（新浪，走熔断器）。
+        # 龙头池只有十余只，逐票成本可控——这条兜底专治东财快照单点故障。
+        changes = self._leader_changes_from_spot(leaders)
+        if changes is None:
+            changes = self._leader_changes_realtime(leaders)
+        if not changes:
             result["total"] = len(leaders)
             return result
 
+        def _round(v):
+            return round(float(v), 2) if v is not None else None
+
+        changes.sort(key=lambda x: x[2])  # 按今日涨跌幅升序，最惨的在前
+        items = []
+        for code, name, chg in changes:
+            m = self._leader_metrics.get(code, {})
+            items.append({
+                "code": code,
+                "name": name,
+                "change": round(chg, 2),                        # 今日
+                "prev_change": _round(m.get("prev_change")),    # 昨日
+                "recent_return": _round(m.get("recent_return")),# 近N日累计
+                "spark": m.get("spark") or [],                  # 近N日收盘序列(迷你走势)
+                "blown": bool(chg <= cfg.big_loss_pct),
+            })
+        total = len(changes)
+        blown = sum(1 for _, _, chg in changes if chg <= cfg.big_loss_pct)
+        result.update(total=total, blown=blown,
+                      rate=(blown / total) if total > 0 else None, items=items)
+        return result
+
+    def _leader_changes_from_spot(self, leaders: List[str]) -> Optional[List[Tuple[str, str, float]]]:
+        """从全A快照取龙头今日涨跌 [(code, name, chg)]。快照不可用返回 None（走兜底）。"""
+        spot = self._get_spot_snapshot()
+        if spot is None:
+            return None
         try:
             code_col = self._find_col(spot, "代码")
             change_col = self._find_col(spot, "涨跌幅")
             name_col = self._find_col(spot, "名称")
             if not code_col or not change_col:
-                result["total"] = len(leaders)
-                return result
-
+                return None
             snap = spot.copy()
             snap["_code"] = snap[code_col].astype(str).str.zfill(6)
             snap["_chg"] = pd.to_numeric(snap[change_col], errors="coerce")
             snap["_name"] = snap[name_col].astype(str) if name_col else ""
             sub = snap[snap["_code"].isin(set(leaders))].dropna(subset=["_chg"])
-            total = len(sub)
-            blown = int((sub["_chg"] <= cfg.big_loss_pct).sum())
-
-            # 逐票明细（按今日涨跌幅升序，最惨的在前），标记是否“大面”，
-            # 并附上近期涨幅(入选依据)与昨日单日涨跌(走势)
-            def _round(v):
-                return round(float(v), 2) if v is not None else None
-
-            items = []
-            for _, r in sub.sort_values("_chg").iterrows():
-                m = self._leader_metrics.get(r["_code"], {})
-                items.append({
-                    "code": r["_code"],
-                    "name": r["_name"],
-                    "change": round(float(r["_chg"]), 2),          # 今日
-                    "prev_change": _round(m.get("prev_change")),    # 昨日
-                    "recent_return": _round(m.get("recent_return")),# 近N日累计
-                    "spark": m.get("spark") or [],                  # 近N日收盘序列(迷你走势)
-                    "blown": bool(r["_chg"] <= cfg.big_loss_pct),
-                })
-            result.update(
-                total=total,
-                blown=blown,
-                rate=(blown / total) if total > 0 else None,
-                items=items,
-            )
-            return result
+            return [(r["_code"], r["_name"], float(r["_chg"])) for _, r in sub.iterrows()]
         except Exception as exc:
-            logger.warning(f"计算龙头大面率失败: {exc}")
-            result["total"] = len(leaders)
-            return result
+            logger.warning(f"快照解析龙头涨跌失败: {exc}")
+            return None
+
+    def _leader_changes_realtime(self, leaders: List[str]) -> List[Tuple[str, str, float]]:
+        """兜底：逐票实时行情取今日涨跌幅（多源+熔断，绕开东财快照单点）。"""
+        out: List[Tuple[str, str, float]] = []
+        fetch = getattr(self.fetcher, "get_stock_realtime", None)
+        if not callable(fetch):
+            return out
+        for code in leaders:
+            try:
+                rt = fetch(code)
+                if rt and not rt.get("error") and rt.get("current"):
+                    out.append((str(code), str(rt.get("name", "")), float(rt.get("change_pct", 0))))
+            except Exception:
+                continue
+        if out:
+            logger.info(f"大面率降级：逐票实时兜底命中 {len(out)}/{len(leaders)}")
+        return out
 
     # ------------------------------------------------------------------
     # D3：市场总体跌停家数（系统性恐慌）
