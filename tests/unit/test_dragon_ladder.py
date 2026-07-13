@@ -1,10 +1,27 @@
 """DragonLadder 单元测试（全程 mock，不依赖网络）。"""
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import dragon_ladder as dl_mod
 from dragon_ladder import DragonLadder, LadderConfig, _to_minutes
+
+# 周期历史落盘重定向到临时目录，避免测试污染真实 cache/cycle_history.json
+_TMP = tempfile.TemporaryDirectory()
+_ORIG_CYCLE_PATH = DragonLadder._cycle_history_path
+
+
+def setUpModule():
+    DragonLadder._cycle_history_path = (
+        lambda self: Path(_TMP.name) / "cycle_history.json")
+
+
+def tearDownModule():
+    DragonLadder._cycle_history_path = _ORIG_CYCLE_PATH
+    _TMP.cleanup()
 
 
 class _FakePool:
@@ -131,6 +148,50 @@ class LadderTest(unittest.TestCase):
         # 第二次命中缓存
         data2 = self.dl.build()
         self.assertTrue(data2["cached"])
+
+
+class CycleTransitionTest(unittest.TestCase):
+    def setUp(self):
+        self.dl = DragonLadder(data_fetcher=_FakePool([]))
+        self.path = self.dl._cycle_history_path()
+        if self.path.exists():
+            self.path.unlink()
+
+    def _seed_prev(self, cycle, rate=0.1):
+        self.path.write_text(
+            json.dumps({"2020-01-01": {"cycle": cycle, "rate": rate}}), encoding="utf-8")
+
+    def test_first_record_no_transition(self):
+        self.assertIsNone(self.dl._cycle_transition("弱", 0.1))
+        hist = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(len(hist), 1)  # 今天已记录
+
+    def test_up_transition(self):
+        self._seed_prev("弱", 0.12)
+        cc = self.dl._cycle_transition("强", 0.45)
+        self.assertEqual((cc["from"], cc["to"], cc["direction"]), ("弱", "强", "up"))
+
+    def test_down_transition(self):
+        self._seed_prev("强", 0.5)
+        cc = self.dl._cycle_transition("弱", 0.1)
+        self.assertEqual(cc["direction"], "down")
+
+    def test_same_cycle_no_transition(self):
+        self._seed_prev("中", 0.3)
+        self.assertIsNone(self.dl._cycle_transition("中", 0.25))
+
+    def test_unknown_cycle_not_recorded(self):
+        self.assertIsNone(self.dl._cycle_transition("未知", None))
+        self.assertFalse(self.path.exists())  # 未知档不落盘
+
+    def test_intraday_overwrite_same_day(self):
+        self._seed_prev("弱")
+        self.dl._cycle_transition("中", 0.25)
+        self.dl._cycle_transition("强", 0.45)   # 盘中再变，覆盖当天记录
+        hist = json.loads(self.path.read_text(encoding="utf-8"))
+        today_entries = [v for k, v in hist.items() if k != "2020-01-01"]
+        self.assertEqual(len(today_entries), 1)
+        self.assertEqual(today_entries[0]["cycle"], "强")
 
 
 if __name__ == "__main__":

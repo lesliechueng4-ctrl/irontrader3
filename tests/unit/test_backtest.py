@@ -96,6 +96,25 @@ class RunIntegrationTest(unittest.TestCase):
         self.assertTrue(all("ret_1" in t for t in res["trades"]))
 
 
+class SummarizeCostTest(unittest.TestCase):
+    def test_cost_sensitivity_rows(self):
+        from backtest_study import summarize
+        df = pd.DataFrame({
+            "date": ["2026-06-02", "2026-06-03"],
+            "code": ["600001", "600002"],
+            "cycle": ["弱", "弱"],
+            "role": ["龙头", "龙二"],
+            "divergence": ["分歧", "分歧"],
+            "buy_hint": [True, True],
+            "ret_3": [5.0, -4.0],
+        })
+        out = summarize(df, [3])
+        cs = {c["cost"]: c for c in out["cost_sensitivity"]}
+        self.assertEqual(cs[0.0]["n"], 2)
+        self.assertAlmostEqual(cs[0.3]["avg"], 0.2, places=2)   # (4.7 - 4.3) / 2
+        self.assertEqual(cs[0.5]["win"], 0.5)                    # 4.5 赢 / -4.5 输
+
+
 class MergeSamplesTest(unittest.TestCase):
     def test_dedup_keeps_latest_and_sorts(self):
         from backtest_study import merge_samples

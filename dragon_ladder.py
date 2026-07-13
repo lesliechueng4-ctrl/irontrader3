@@ -18,9 +18,11 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from logger_config import get_logger
@@ -252,6 +254,54 @@ class DragonLadder:
         return result
 
     # ------------------------------------------------------------------
+    # ③b 周期转折检测：晋级率跨档（弱/中/强）是这套打法最重要的时点
+    # ------------------------------------------------------------------
+    _CYCLE_ORDER = {"弱": 0, "中": 1, "强": 2}
+
+    def _cycle_history_path(self) -> Path:
+        cache_dir = getattr(getattr(self.fetcher, "cache_manager", None), "cache_dir", "cache")
+        return Path(cache_dir) / "cycle_history.json"
+
+    def _cycle_transition(self, cycle: str, rate: Optional[float]) -> Optional[Dict[str, object]]:
+        """记录今日周期档位，并与上一交易日的最终档位对比，返回转折信息或 None。
+
+        同一天内反复调用只覆盖当天记录（盘中晋级率会波动，以最后一次为准），
+        对比对象始终是【上一自然记录日】的收档值。
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        path = self._cycle_history_path()
+        hist: Dict[str, Dict] = {}
+        try:
+            if path.exists():
+                hist = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug(f"读周期历史失败: {exc}")
+
+        prev_dates = sorted(d for d in hist if d < today)
+        prev = hist.get(prev_dates[-1]) if prev_dates else None
+
+        if cycle in self._CYCLE_ORDER:
+            hist[today] = {"cycle": cycle, "rate": rate}
+            hist = {k: hist[k] for k in sorted(hist)[-30:]}   # 只留最近30个记录日
+            try:
+                path.write_text(json.dumps(hist, ensure_ascii=False), encoding="utf-8")
+            except Exception as exc:
+                logger.debug(f"写周期历史失败: {exc}")
+
+        if (
+            prev
+            and cycle in self._CYCLE_ORDER
+            and prev.get("cycle") in self._CYCLE_ORDER
+            and prev["cycle"] != cycle
+        ):
+            direction = "up" if self._CYCLE_ORDER[cycle] > self._CYCLE_ORDER[prev["cycle"]] else "down"
+            return {
+                "from": prev["cycle"], "to": cycle, "direction": direction,
+                "prev_date": prev_dates[-1], "prev_rate": prev.get("rate"), "rate": rate,
+            }
+        return None
+
+    # ------------------------------------------------------------------
     # ④ 卖在一致预警
     # ------------------------------------------------------------------
     def _sell_warning(self, sectors: List[Dict], max_height: int) -> Optional[str]:
@@ -325,6 +375,13 @@ class DragonLadder:
         else:
             signal_note = ""
 
+        # 周期转折检测（与上一记录日对比，落盘 cycle_history.json）
+        cycle_change = None
+        try:
+            cycle_change = self._cycle_transition(cycle, pr)
+        except Exception as exc:
+            logger.debug(f"周期转折检测失败: {exc}")
+
         # 全场分歧/一致汇总
         total = sum(s["count"] for s in sectors)
         consensus = sum(1 for s in sectors for it in s["stocks"] if it["divergence"] == "一致")
@@ -360,6 +417,7 @@ class DragonLadder:
                 "buy_hint_reliable": cycle not in ("弱",),  # 弱周期买点不可靠（回测）
             },
             "signal_note": signal_note,
+            "cycle_change": cycle_change,         # 周期转折（弱/中/强 跨档）
             "sell_warning": sell_warning,
             "stock_sell_alerts": sell_alerts,     # 个股级"一致加速"减仓提示
             "sectors": sectors,

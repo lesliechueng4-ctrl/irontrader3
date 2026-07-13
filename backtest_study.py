@@ -197,6 +197,15 @@ def report(df: pd.DataFrame, horizons: List[int]):
         wr = f"{a['win']*100:.1f}%" if a["win"] is not None else "--"
         print(f"{ht:>6}{a['n']:>6}{wr:>8}{str(a['avg']):>8}")
 
+    # 连板股次日开盘滑点不小：扣掉往返冲击+费用后结论是否翻转，决定实盘能否吃到回测收益
+    print(f"\n=== ④ 成本敏感性 · buy_hint（持有{h}日，扣往返冲击+费用）===")
+    print(f"{'成本%':>6}{'样本':>6}{'胜率':>8}{'平均%':>8}")
+    bh_rets = bh[f"ret_{h}"].dropna().tolist()
+    for cost in (0.0, 0.3, 0.5):
+        a = _agg([r - cost for r in bh_rets])
+        wr = f"{a['win']*100:.1f}%" if a["win"] is not None else "--"
+        print(f"{cost:>6}{a['n']:>6}{wr:>8}{str(a['avg']):>8}")
+
 
 def _pct(w) -> str:
     return f"{w * 100:.0f}%" if w is not None else "--"
@@ -231,6 +240,13 @@ def summarize(df: Optional[pd.DataFrame], horizons: List[int]) -> Dict[str, obje
         a = _agg(bh.loc[bh["cycle"] == cyc, col].tolist()) if col in bh.columns else _agg([])
         cycles[cyc] = {"n": a["n"], "win": a["win"], "avg": a["avg"]}
 
+    # 成本敏感性：买点★扣往返成本后的胜率/均值（0.3%≈常规冲击，0.5%≈追高冲击）
+    bh_rets = bh[col].dropna().tolist() if col in bh.columns else []
+    cost_sensitivity = []
+    for cost in (0.0, 0.3, 0.5):
+        a = _agg([r - cost for r in bh_rets])
+        cost_sensitivity.append({"cost": cost, "n": a["n"], "win": a["win"], "avg": a["avg"]})
+
     bh_row = next((c for c in cross if c["signal"] == "买点★"), None)
     con_row = next((c for c in cross if c["signal"] == "一致"), None)
     parts = []
@@ -240,7 +256,8 @@ def summarize(df: Optional[pd.DataFrame], horizons: List[int]) -> Dict[str, obje
         parts.append(f"强势一致 胜率{_pct(con_row['win'])}、均{con_row['avg']}%")
     conclusion = (f"持有{h}日：" + "；".join(parts)) if parts else "样本不足，暂无结论"
     return {"total": int(len(df)), "days": int(df["date"].nunique()), "h": h,
-            "cross": cross, "cycles": cycles, "conclusion": conclusion}
+            "cross": cross, "cycles": cycles, "cost_sensitivity": cost_sensitivity,
+            "conclusion": conclusion}
 
 
 def merge_samples(old: Optional[pd.DataFrame], new: Optional[pd.DataFrame]) -> pd.DataFrame:

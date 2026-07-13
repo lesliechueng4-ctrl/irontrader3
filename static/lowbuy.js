@@ -75,6 +75,12 @@ function renderDragonLadder(data) {
            <span class="ld-sw-detail">${stockAlerts[0].reason}</span></div>` : '';
     const staleHtml = data.data_stale
         ? `<span class="ld-stale" title="数据源暂不可用，展示最近一次成功快照">📡 快照 ${data.data_as_of || ''}</span>` : '';
+    const cc = data.cycle_change;
+    const ccHtml = cc ? (cc.direction === 'up'
+        ? `<div class="ld-cycle-change up">⚡ 周期转折：<b>${cc.from} → ${cc.to}</b>（晋级率 ${cc.prev_rate != null ? Math.round(cc.prev_rate * 100) + '%' : '--'} → ${cc.rate != null ? Math.round(cc.rate * 100) + '%' : '--'}）
+            赚钱效应回升——这是本打法最关键的入场窗口：优先人气龙头，分歧买点可逐步启用。</div>`
+        : `<div class="ld-cycle-change down">🧊 周期转折：<b>${cc.from} → ${cc.to}</b>（晋级率 ${cc.prev_rate != null ? Math.round(cc.prev_rate * 100) + '%' : '--'} → ${cc.rate != null ? Math.round(cc.rate * 100) + '%' : '--'}）
+            赚钱效应转弱——收缩仓位，勿追分歧，只守强一致龙头或空仓等待。</div>`) : '';
     const cycleColors = { '强': '#43a047', '中': '#fb8c00', '弱': '#e53935', '未知': '#90a4ae' };
     const cyc = sp.cycle || '未知';
     const noteText = data.signal_note
@@ -97,6 +103,7 @@ function renderDragonLadder(data) {
                 <span class="ld-dc">一致 <b class="con">${sp.consensus_count || 0}</b> / 分歧 <b class="div">${sp.divergent_count || 0}</b> / 买点 <b class="buy">${sp.buy_hint_count || 0}</b>${sp.wts_count ? ` / <b class="wts">⚡${sp.wts_count}</b>` : ''}</span>
             </div>
         </div>
+        ${ccHtml}
         ${noteHtml}
         ${warnHtml}
         ${stockWarnHtml}
@@ -166,12 +173,17 @@ function renderBacktestResult(res) {
     const cycRow = ['强', '中', '弱'].map(k => {
         const a = cyc[k] || {}; return `${k}:${a.n || 0}样本/${pct(a.win)}`;
     }).join(' · ');
+    const cs = res.cost_sensitivity || [];
+    const csRow = cs.length
+        ? `<div class="bt-cyc" title="扣除往返冲击成本+费用后，买点★是否仍然成立">成本敏感性(买点★)：${cs.map(c =>
+              `扣${c.cost}% → ${pct(c.win)} / 均${c.avg == null ? '--' : c.avg + '%'}`).join(' · ')}</div>` : '';
     live.innerHTML = `
         <div class="bt-result">
             <div class="bt-head">✅ 实时回测完成 · ${res.as_of || ''} · 累计 <b>${res.total}</b> 笔 / ${res.days} 日${res.added ? `（本轮新增 ${res.added}）` : ''}</div>
             <div class="bt-concl">${res.conclusion || ''}</div>
             <table class="bt-table"><thead><tr><th>信号</th><th>样本</th><th>胜率</th><th>均值(持有${res.h}日)</th></tr></thead><tbody>${rows}</tbody></table>
             <div class="bt-cyc">买点★分周期胜率：${cycRow}</div>
+            ${csRow}
         </div>`;
 }
 
