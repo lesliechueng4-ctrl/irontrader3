@@ -7,7 +7,6 @@
 
 import unittest
 
-from decision_maker import DecisionMaker
 from decision_maker_enhanced import DecisionMakerEnhanced
 
 
@@ -30,7 +29,7 @@ def _bare(cls):
 
 
 class MarketGateTestMixin:
-    """两个决策引擎共用的断言，子类提供 self.dm"""
+    """决策引擎风控降级的共用断言，子类提供 self.dm"""
 
     def test_buy_downgraded_to_watch_when_market_blocked(self):
         result = self.dm._apply_market_gate(
@@ -68,11 +67,6 @@ class MarketGateTestMixin:
         warning = self.dm._market_risk_warning(BAD_MARKET)
         self.assertIn('单边下跌', warning)
         self.assertIn('空仓观望', warning)
-
-
-class DecisionMakerGateTest(MarketGateTestMixin, unittest.TestCase):
-    def setUp(self):
-        self.dm = _bare(DecisionMaker)
 
 
 class DecisionMakerEnhancedGateTest(MarketGateTestMixin, unittest.TestCase):

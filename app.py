@@ -61,20 +61,14 @@ except ImportError:
 
 app.register_blueprint(scanner_bp)
 
-# Try to import enhanced decision maker, fallback to original
-try:
-    from decision_maker_enhanced import DecisionMakerEnhanced
-    decision_maker = DecisionMakerEnhanced(
-        enable_chip_quality=ChipQualityConfig.ENABLED,
-        chip_config=ChipQualityConfig.to_dict()
-    )
-    logger.info("Enhanced decision engine started, chip quality analysis enabled")
-except Exception as e:
-    logger.warning(f"Enhanced decision engine initialization failed: {e}")
-    logger.info("Fallback to original DecisionMaker")
-    from decision_maker import DecisionMaker
-    decision_maker = DecisionMaker()
-    logger.info("Original decision engine started")
+# 决策引擎：仅保留增强版（旧版 decision_maker 已退役，避免两套逻辑漂移）。
+# 初始化失败直接抛出——引擎不可用时整个应用无意义，宁可启动即报错。
+from decision_maker_enhanced import DecisionMakerEnhanced
+decision_maker = DecisionMakerEnhanced(
+    enable_chip_quality=ChipQualityConfig.ENABLED,
+    chip_config=ChipQualityConfig.to_dict()
+)
+logger.info("Enhanced decision engine started, chip quality analysis enabled")
 
 # === Global Cache for Stock Search ===
 ALL_STOCKS_CACHE = None
@@ -182,6 +176,7 @@ def dragon_ladder():
 
 # ===== 手动"重新回测"：后台线程跑 backtest_study 并累积样本，前端轮询进度 =====
 _BT_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'backtest_samples.csv')
+_BT_SUMMARY = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'backtest_summary.json')
 _BT_STATE = {'running': False, 'progress': '', 'started': None, 'finished': None,
              'error': None, 'result': None}
 _BT_LOCK = Lock()
@@ -189,7 +184,7 @@ _BT_LOCK = Lock()
 
 def _run_backtest_job(days, horizons):
     import pandas as pd
-    from backtest_study import collect, merge_samples, summarize
+    from backtest_study import collect, merge_samples, summarize, update_summary_file
     try:
         def _cb(i, total, got):
             _BT_STATE['progress'] = f"{i}/{total}（已收集 {got} 笔）"
@@ -207,6 +202,8 @@ def _run_backtest_job(days, horizons):
         result = summarize(df, horizons)
         result['added'] = max(added, 0)
         result['as_of'] = time.strftime('%Y-%m-%d %H:%M')
+        # 周报自检：写 summary JSON 并检测结论翻转，翻转随结果返回给前端
+        result['flips'] = update_summary_file(df, horizons, path=_BT_SUMMARY)
         _BT_STATE['result'] = result
     except Exception as e:
         logger.error(f"手动回测失败: {e}")
@@ -239,6 +236,20 @@ def backtest_status():
         'started': _BT_STATE['started'], 'finished': _BT_STATE['finished'],
         'error': _BT_STATE['error'], 'result': _BT_STATE['result'],
     }})
+
+
+@app.route('/api/backtest/summary')
+def backtest_summary():
+    """最近一次回测周报（含结论翻转），由每周任务/手动回测更新。"""
+    if not os.path.exists(_BT_SUMMARY):
+        return jsonify({'success': True, 'data': None})
+    try:
+        import json as _json
+        with open(_BT_SUMMARY, encoding='utf-8') as f:
+            return jsonify({'success': True, 'data': _json.load(f)})
+    except Exception as e:
+        logger.warning(f"读取回测周报失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/api/stock/<code>')

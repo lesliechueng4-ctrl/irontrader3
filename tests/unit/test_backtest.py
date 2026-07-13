@@ -115,6 +115,35 @@ class SummarizeCostTest(unittest.TestCase):
         self.assertEqual(cs[0.5]["win"], 0.5)                    # 4.5 赢 / -4.5 输
 
 
+class SummaryFlipTest(unittest.TestCase):
+    def _mk(self, sign):
+        """12 笔 buy_hint 样本，收益全正(sign=+1)或全负(sign=-1)。"""
+        n = 12
+        return pd.DataFrame({
+            "date": [f"2026-06-{(i % 20) + 1:02d}" for i in range(n)],
+            "code": [f"6000{i:02d}" for i in range(n)],
+            "cycle": ["弱"] * n,
+            "role": ["龙头"] * n,
+            "divergence": ["分歧"] * n,
+            "buy_hint": [True] * n,
+            "ret_3": [sign * (1.0 + i * 0.1) for i in range(n)],
+        })
+
+    def test_flip_detected_between_runs(self):
+        import os
+        import tempfile
+        from backtest_study import update_summary_file
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "summary.json")
+            flips1 = update_summary_file(self._mk(-1), [3], path=path)
+            self.assertEqual(flips1, [])   # 首次没有上一份可对比
+            flips2 = update_summary_file(self._mk(+1), [3], path=path)
+            self.assertTrue(any(f["metric"] == "avg" for f in flips2))   # 均值符号翻转
+            self.assertTrue(any(f["metric"] == "win" for f in flips2))   # 胜率跨过50%
+            flips3 = update_summary_file(self._mk(+1), [3], path=path)
+            self.assertEqual(flips3, [])   # 同向不再报
+
+
 class MergeSamplesTest(unittest.TestCase):
     def test_dedup_keeps_latest_and_sorts(self):
         from backtest_study import merge_samples

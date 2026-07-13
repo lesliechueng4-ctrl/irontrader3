@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import statistics
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -260,6 +262,70 @@ def summarize(df: Optional[pd.DataFrame], horizons: List[int]) -> Dict[str, obje
             "conclusion": conclusion}
 
 
+def update_summary_file(df: Optional[pd.DataFrame], horizons: List[int],
+                        path: str = "outputs/backtest_summary.json") -> List[Dict]:
+    """写最新回测周报 JSON，并与上一份对比检测【结论翻转】。
+
+    翻转定义（样本 ≥10 才有资格参与判定，避免小样本噪音）：
+      - 买点★整体 / 买点★分周期：平均收益符号翻转，或胜率跨过 50%。
+    每周任务与手动回测都会调用——结论一旦翻转（例如弱周期买点由跑输转为跑赢），
+    前端梯队卡会弹提示，提醒重新审视当前操作纪律。
+    返回翻转列表 [{key, metric, from, to, note}]。
+    """
+    new_sum = summarize(df, horizons)
+
+    def _verdicts(s: Dict) -> Dict[str, Dict]:
+        out: Dict[str, Dict] = {}
+        bh = next((c for c in (s.get("cross") or []) if c["signal"] == "买点★"), None)
+        if bh and (bh.get("n") or 0) >= 10:
+            out["买点★整体"] = {"win": bh.get("win"), "avg": bh.get("avg"), "n": bh.get("n")}
+        for cyc, a in (s.get("cycles") or {}).items():
+            if (a.get("n") or 0) >= 10:
+                out[f"买点★·{cyc}周期"] = {"win": a.get("win"), "avg": a.get("avg"), "n": a.get("n")}
+        return out
+
+    old = None
+    try:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                old = json.load(f)
+    except Exception as exc:
+        logger.warning(f"读上一份回测周报失败: {exc}")
+
+    new_v = _verdicts(new_sum)
+    flips: List[Dict] = []
+    if old and old.get("verdicts"):
+        for key, nv in new_v.items():
+            ov = old["verdicts"].get(key)
+            if not ov:
+                continue
+            if (ov.get("avg") is not None and nv.get("avg") is not None
+                    and (ov["avg"] > 0) != (nv["avg"] > 0)):
+                flips.append({"key": key, "metric": "avg", "from": ov["avg"], "to": nv["avg"],
+                              "note": f"{key} 平均收益 {ov['avg']}% → {nv['avg']}%（符号翻转）"})
+            if (ov.get("win") is not None and nv.get("win") is not None
+                    and (ov["win"] >= 0.5) != (nv["win"] >= 0.5)):
+                flips.append({"key": key, "metric": "win", "from": ov["win"], "to": nv["win"],
+                              "note": f"{key} 胜率 {ov['win'] * 100:.0f}% → {nv['win'] * 100:.0f}%（跨过50%）"})
+
+    payload = {
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "prev_as_of": (old or {}).get("as_of"),
+        "verdicts": new_v,
+        "flips": flips,
+        "summary": new_sum,
+    }
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except Exception as exc:
+        logger.warning(f"写回测周报失败: {exc}")
+    for fl in flips:
+        print(f"[结论翻转] {fl['note']}")
+    return flips
+
+
 def merge_samples(old: Optional[pd.DataFrame], new: Optional[pd.DataFrame]) -> pd.DataFrame:
     """把新一轮逐笔结果并入历史样本库：按 (date, code) 去重(保留最新)，按日期排序。
 
@@ -286,7 +352,6 @@ def main(argv=None):
     horizons = [int(x) for x in args.horizons.split(",") if x.strip()]
 
     if args.accumulate:
-        import os
         old = None
         if os.path.exists(args.accumulate):
             try:
@@ -309,6 +374,11 @@ def main(argv=None):
                     f.write(f"{stamp} total={len(df)} added={max(added,0)} days={args.days}\n")
             except Exception:
                 pass
+            # 周报自检：写 summary JSON 并检测与上一份的结论翻转
+            update_summary_file(
+                df, horizons,
+                path=os.path.join(os.path.dirname(os.path.abspath(args.accumulate)),
+                                  "backtest_summary.json"))
         report(df, horizons)
         return 0
 

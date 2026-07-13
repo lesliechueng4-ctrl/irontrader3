@@ -7,7 +7,7 @@ import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-from decision_maker import DecisionMaker
+from decision_maker_enhanced import DecisionMakerEnhanced as DecisionMaker  # 旧版已退役
 from data_fetcher import DataFetcher
 import akshare as ak
 import pandas as pd
