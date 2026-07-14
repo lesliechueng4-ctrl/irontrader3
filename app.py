@@ -184,7 +184,7 @@ _BT_LOCK = Lock()
 
 def _run_backtest_job(days, horizons):
     import pandas as pd
-    from backtest_study import collect, merge_samples, summarize, update_summary_file
+    from backtest_study import collect, json_sane, merge_samples, summarize, update_summary_file
     try:
         def _cb(i, total, got):
             _BT_STATE['progress'] = f"{i}/{total}（已收集 {got} 笔）"
@@ -204,7 +204,8 @@ def _run_backtest_job(days, horizons):
         result['as_of'] = time.strftime('%Y-%m-%d %H:%M')
         # 周报自检：写 summary JSON 并检测结论翻转，翻转随结果返回给前端
         result['flips'] = update_summary_file(df, horizons, path=_BT_SUMMARY)
-        _BT_STATE['result'] = result
+        # 消毒兜底：NaN 序列化出去是非法 JSON，前端 response.json() 会直接抛错
+        _BT_STATE['result'] = json_sane(result)
     except Exception as e:
         logger.error(f"手动回测失败: {e}")
         _BT_STATE['error'] = str(e)
@@ -245,8 +246,10 @@ def backtest_summary():
         return jsonify({'success': True, 'data': None})
     try:
         import json as _json
+        from backtest_study import json_sane
         with open(_BT_SUMMARY, encoding='utf-8') as f:
-            return jsonify({'success': True, 'data': _json.load(f)})
+            # 历史文件可能残留 NaN 字面量（json.load 读得进、浏览器读不了），消毒后再返回
+            return jsonify({'success': True, 'data': json_sane(_json.load(f))})
     except Exception as e:
         logger.warning(f"读取回测周报失败: {e}")
         return jsonify({'success': False, 'error': str(e)})

@@ -115,6 +115,42 @@ class SummarizeCostTest(unittest.TestCase):
         self.assertEqual(cs[0.5]["win"], 0.5)                    # 4.5 赢 / -4.5 输
 
 
+class NaNSafetyTest(unittest.TestCase):
+    """样本库 CSV 缺失值(NaN)不得泄漏进 JSON 响应（浏览器解析会直接报错）。"""
+
+    def test_agg_filters_nan(self):
+        from backtest_study import _agg
+        a = _agg([float("nan"), 5.0, None, -1.0])
+        self.assertEqual(a["n"], 2)          # NaN 与 None 均被剔除
+        self.assertEqual(a["avg"], 2.0)      # (5 - 1) / 2
+
+    def test_summarize_json_serializable_with_nan(self):
+        import json as _json
+        from backtest_study import summarize
+        # 模拟合并样本库：部分行的某个持有期收益缺失（CSV 读回为 NaN）
+        df = pd.DataFrame({
+            "date": ["2026-06-02", "2026-06-03"],
+            "code": ["600001", "600002"],
+            "cycle": ["弱", "弱"],
+            "role": ["龙头", "龙二"],
+            "divergence": ["分歧", "一致"],
+            "buy_hint": [True, False],
+            "ret_1": [float("nan"), 2.0],
+            "ret_3": [5.0, float("nan")],
+        })
+        out = summarize(df, [1, 3])
+        _json.dumps(out, allow_nan=False)  # 不抛异常 = 无 NaN 泄漏
+
+    def test_json_sane_scrubs_nested(self):
+        from backtest_study import json_sane
+        dirty = {"a": float("nan"), "b": [1.0, float("inf"), {"c": float("-inf")}], "d": "ok"}
+        clean = json_sane(dirty)
+        self.assertIsNone(clean["a"])
+        self.assertIsNone(clean["b"][1])
+        self.assertIsNone(clean["b"][2]["c"])
+        self.assertEqual(clean["d"], "ok")
+
+
 class SummaryFlipTest(unittest.TestCase):
     def _mk(self, sign):
         """12 笔 buy_hint 样本，收益全正(sign=+1)或全负(sign=-1)。"""

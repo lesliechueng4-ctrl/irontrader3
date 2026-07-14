@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 from datetime import datetime, timedelta
@@ -74,7 +75,9 @@ def _real_promotion(date_str: str, limit_pct: float = 9.5) -> Optional[float]:
 
 
 def _agg(xs: List[float]) -> Dict[str, object]:
-    xs = [x for x in xs if x is not None]
+    # 同时过滤 None 与 NaN：样本库 CSV 合并读回时缺失值是 NaN，
+    # 混进 mean/median 会把 NaN 带进 JSON 响应（非法 JSON，前端解析报错）
+    xs = [float(x) for x in xs if x is not None and pd.notna(x)]
     if not xs:
         return {"n": 0, "win": None, "avg": None, "med": None}
     return {"n": len(xs), "win": round(sum(1 for v in xs if v > 0) / len(xs), 3),
@@ -209,6 +212,21 @@ def report(df: pd.DataFrame, horizons: List[int]):
         print(f"{cost:>6}{a['n']:>6}{wr:>8}{str(a['avg']):>8}")
 
 
+def json_sane(obj):
+    """递归把 NaN/Inf 替换为 None。
+
+    stdlib json 默认把 NaN 序列化成字面量 `NaN`——不是合法 JSON，浏览器
+    `response.json()` 直接抛错。所有要进 HTTP 响应/落盘 JSON 的结构都过一遍。
+    """
+    if isinstance(obj, dict):
+        return {k: json_sane(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_sane(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
+
+
 def _pct(w) -> str:
     return f"{w * 100:.0f}%" if w is not None else "--"
 
@@ -288,7 +306,9 @@ def update_summary_file(df: Optional[pd.DataFrame], horizons: List[int],
     try:
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
-                old = json.load(f)
+                # json.load 能把字面量 NaN 读成 float('nan')——旧文件若被污染，
+                # 这里先消毒，避免 NaN 参与翻转比较或再次流入响应
+                old = json_sane(json.load(f))
     except Exception as exc:
         logger.warning(f"读上一份回测周报失败: {exc}")
 
@@ -308,17 +328,17 @@ def update_summary_file(df: Optional[pd.DataFrame], horizons: List[int],
                 flips.append({"key": key, "metric": "win", "from": ov["win"], "to": nv["win"],
                               "note": f"{key} 胜率 {ov['win'] * 100:.0f}% → {nv['win'] * 100:.0f}%（跨过50%）"})
 
-    payload = {
+    payload = json_sane({
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "prev_as_of": (old or {}).get("as_of"),
         "verdicts": new_v,
         "flips": flips,
         "summary": new_sum,
-    }
+    })
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False, allow_nan=False)
     except Exception as exc:
         logger.warning(f"写回测周报失败: {exc}")
     for fl in flips:
