@@ -149,7 +149,11 @@ class DataFetcher:
         return text
 
     @staticmethod
-    def _normalize_history_frame(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    def _normalize_history_frame(
+        df: Optional[pd.DataFrame],
+        volume_multiplier: float = 1.0,
+        source_name: str = '',
+    ) -> Optional[pd.DataFrame]:
         """Normalize history responses from different data sources to one schema."""
         if df is None or df.empty:
             return None
@@ -185,10 +189,16 @@ class DataFetcher:
         for col in numeric_cols:
             if col in frame.columns:
                 frame[col] = pd.to_numeric(frame[col], errors='coerce')
+        frame['volume'] = frame['volume'] * float(volume_multiplier)
 
         selected_cols = [col for col in ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'turnover'] if col in frame.columns]
         frame = frame[selected_cols].dropna(subset=['open', 'high', 'low', 'close', 'volume'])
-        return frame.reset_index(drop=True) if not frame.empty else None
+        if frame.empty:
+            return None
+        frame = frame.reset_index(drop=True)
+        frame.attrs['data_source'] = source_name
+        frame.attrs['volume_unit'] = 'shares'
+        return frame
     
     def _get_cache(self, key: str) -> Optional[any]:
         """获取缓存数据"""
@@ -1056,16 +1066,20 @@ class DataFetcher:
         history_loaders = [
             ("stock_zh_a_daily", lambda: ak.stock_zh_a_daily(
                 symbol=self._format_legacy_symbol(clean_code),
-                start_date=start_date, end_date=end_date, adjust="qfq")),
+                start_date=start_date, end_date=end_date, adjust="qfq"), 1.0),
             ("stock_zh_a_hist", lambda: ak.stock_zh_a_hist(
                 symbol=clean_code, period="daily",
-                start_date=start_date, end_date=end_date, adjust="qfq")),
+                start_date=start_date, end_date=end_date, adjust="qfq"), 100.0),
         ]
 
         last_error = None
-        for source_name, loader in history_loaders:
+        for source_name, loader, volume_multiplier in history_loaders:
             try:
-                df = self._normalize_history_frame(loader())
+                df = self._normalize_history_frame(
+                    loader(),
+                    volume_multiplier=volume_multiplier,
+                    source_name=source_name,
+                )
                 if df is None or df.empty:
                     continue
 

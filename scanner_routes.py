@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock, Thread
@@ -11,6 +12,7 @@ import sys
 import time
 import traceback
 
+import pandas as pd
 from flask import Blueprint, jsonify, request
 
 
@@ -27,7 +29,8 @@ def _scanner_output_dir():
 
 
 def _scanner_output_path(prefix):
-    return _scanner_output_dir() / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return _scanner_output_dir() / f"{prefix}_{stamp}_{uuid4().hex[:8]}.csv"
 
 
 def _resolve_external_script(env_var, local_candidates):
@@ -66,9 +69,11 @@ A_STOCK_SCREENER_PATH = _resolve_external_script(
 )
 
 _EXTERNAL_MODULES = {}
+_HEAVY_SCANNER_LOCK = Lock()
 _EXTERNAL_SCAN_LOCKS = {
-    "wash_pattern": Lock(),
-    "limit_down_rebound": Lock(),
+    # 两条全市场扫描会读写同一批 OHLCV 缓存，必须共享重型任务锁。
+    "wash_pattern": _HEAVY_SCANNER_LOCK,
+    "limit_down_rebound": _HEAVY_SCANNER_LOCK,
 }
 _SCAN_JOBS = {}
 _SCAN_JOBS_LOCK = Lock()
@@ -80,12 +85,16 @@ class _ScanBusyError(RuntimeError):
     pass
 
 
+class _ScanCancelledError(RuntimeError):
+    pass
+
+
 def _cleanup_scan_jobs_locked():
     now = time.time()
     expired_ids = [
         job_id
         for job_id, job in _SCAN_JOBS.items()
-        if job.get("status") in {"completed", "failed"}
+        if job.get("status") in {"completed", "failed", "cancelled", "canceled"}
         and now - float(job.get("finished_at") or now) > _SCAN_JOB_RETENTION_SEC
     ]
     for job_id in expired_ids:
@@ -98,7 +107,7 @@ def _cleanup_scan_jobs_locked():
         (
             (float(job.get("finished_at") or job.get("started_at") or 0), job_id)
             for job_id, job in _SCAN_JOBS.items()
-            if job.get("status") in {"completed", "failed"}
+            if job.get("status") in {"completed", "failed", "cancelled", "canceled"}
         )
     )
     for _, job_id in finished_jobs[: max(0, len(_SCAN_JOBS) - _MAX_SCAN_JOBS)]:
@@ -123,12 +132,14 @@ def _job_snapshot(job):
     return snapshot
 
 
-def _create_scan_job(kind):
+def _create_scan_job(kind, params=None, cancel_supported=False):
     now = time.time()
     job_id = uuid4().hex
     job = {
         "id": job_id,
         "kind": kind,
+        "params": dict(params or {}),
+        "cancel_supported": bool(cancel_supported),
         "status": "queued",
         "phase": "排队中",
         "message": "等待启动筛选任务...",
@@ -143,6 +154,7 @@ def _create_scan_job(kind):
         "elapsed_sec": 0,
         "result": None,
         "error": "",
+        "cancel_requested": False,
     }
     with _SCAN_JOBS_LOCK:
         _cleanup_scan_jobs_locked()
@@ -167,6 +179,25 @@ def _get_scan_job(job_id):
         if not job:
             return None
         return _job_snapshot(job)
+
+
+def _get_active_scan_job(kind=None):
+    with _SCAN_JOBS_LOCK:
+        active = [
+            job
+            for job in _SCAN_JOBS.values()
+            if job.get("status") in {"queued", "running", "cancelling"}
+            and (kind is None or job.get("kind") == kind)
+        ]
+        if not active:
+            return None
+        return _job_snapshot(max(active, key=lambda item: item.get("started_at") or 0))
+
+
+def _scan_cancel_requested(job_id):
+    with _SCAN_JOBS_LOCK:
+        job = _SCAN_JOBS.get(job_id)
+        return bool(job and job.get("cancel_requested"))
 
 
 def _load_external_module(name, path):
@@ -291,6 +322,10 @@ def _normalize_stock_screener_record(record, recent_days):
     macd = _json_safe_value(record.get("MACD", values[12]))
     golden_cross = _json_safe_value(record.get("近期金叉", values[13]))
     score = _json_safe_value(record.get("综合评分", values[14]))
+    latest_date = _json_safe_value(
+        record.get("数据日期", record.get("最新日期", ""))
+    )
+    data_source = _json_safe_value(record.get("数据源", ""))
 
     normalized = {
         "代码": code,
@@ -309,6 +344,8 @@ def _normalize_stock_screener_record(record, recent_days):
         "MACD": macd,
         "近期金叉": golden_cross,
         "综合评分": score,
+        "数据日期": latest_date,
+        "数据源": data_source,
     }
     normalized.update({
         "股票代码": code,
@@ -318,7 +355,7 @@ def _normalize_stock_screener_record(record, recent_days):
         "跌停日涨跌幅(%)": "",
         "次日日期": "",
         "次日涨跌幅(%)": "",
-        "最新日期": date.today().isoformat(),
+        "最新日期": latest_date,
         "最新收盘价": price,
         "最新涨跌幅(%)": today_gain,
     })
@@ -361,48 +398,76 @@ def _write_records_csv(records, output_path):
     if not records:
         return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=list(records[0].keys()))
-        writer.writeheader()
-        writer.writerows(records)
+    temp_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp_path.open("w", newline="", encoding="utf-8-sig") as file:
+            writer = csv.DictWriter(file, fieldnames=list(records[0].keys()))
+            writer.writeheader()
+            writer.writerows(records)
+        os.replace(temp_path, output_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
     return True
+
+
+def _local_stock_outcome(status, df=None, record=None):
+    data_date = ""
+    data_source = ""
+    if df is not None and len(df):
+        try:
+            data_date = pd.to_datetime(df.iloc[-1]["date"]).date().isoformat()
+        except Exception:
+            data_date = str(getattr(df, "attrs", {}).get("data_date") or "")
+        data_source = str(getattr(df, "attrs", {}).get("data_source") or "")
+    return {
+        "status": status,
+        "record": record,
+        "data_date": data_date,
+        "data_source": data_source,
+        "stale_fallback": bool(
+            getattr(df, "attrs", {}).get("stale_fallback")
+        ) if df is not None else False,
+    }
 
 
 def _run_single_local_stock(screener, row, recent_days):
     raw_code = _stock_row_value(row, "code", "")
     if raw_code is None or str(raw_code).strip() == "":
-        return None
+        return _local_stock_outcome("no_data")
     code = str(raw_code).strip().split(".", 1)[0].zfill(6)
     name = str(_stock_row_value(row, "name", ""))
 
     df = screener.get_stock_history(code)
     if df is None:
-        return None
+        return _local_stock_outcome("no_data")
 
     pct_ok, pct_change = screener.check_price_change(df)
     if not pct_ok:
-        return None
+        return _local_stock_outcome("filtered", df=df)
 
     recent_ok, recent_gain = screener.check_recent_gain(df)
     if not recent_ok:
-        return None
+        return _local_stock_outcome("filtered", df=df)
+
+    # 量比只需最后 6 根成交量，远比均线/MACD 便宜，提前短路可明显减少计算。
+    vol_ok, vol_ratio = screener.check_volume_ratio(df)
+    if not vol_ok:
+        return _local_stock_outcome("filtered", df=df)
 
     ma_ok, ma_data = screener.check_ma_alignment(df)
     if not ma_ok:
-        return None
+        return _local_stock_outcome("filtered", df=df)
 
     macd_ok, macd_data = screener.check_macd_golden_cross(df)
     if not macd_ok:
-        return None
-
-    vol_ok, vol_ratio = screener.check_volume_ratio(df)
-    if not vol_ok:
-        return None
+        return _local_stock_outcome("filtered", df=df)
 
     score = screener.score_stock(ma_data, macd_data, vol_ratio, pct_change, recent_gain)
     last = df.iloc[-1]
 
-    return {
+    data_date = pd.to_datetime(last.get("date"), errors="coerce")
+    record = {
         "代码": code,
         "名称": name,
         "现价": round(float(last["close"]), 2),
@@ -418,7 +483,10 @@ def _run_single_local_stock(screener, row, recent_days):
         "MACD": macd_data.get("MACD"),
         "近期金叉": "是" if macd_data.get("金叉") else "否",
         "综合评分": score,
+        "数据日期": data_date.date().isoformat() if pd.notna(data_date) else "",
+        "数据源": str(getattr(df, "attrs", {}).get("data_source") or ""),
     }
+    return _local_stock_outcome("matched", df=df, record=record)
 
 
 def _run_local_stock_screener(
@@ -428,6 +496,7 @@ def _run_local_stock_screener(
     threads=1,
     config_overrides=None,
     progress_callback=None,
+    cancel_check=None,
 ):
     """Support the bundled stock_screener_2.py style interface."""
     config = getattr(screener, "CONFIG", None)
@@ -469,8 +538,62 @@ def _run_local_stock_screener(
                 errors=0,
             )
             stocks = _limit_stock_pool(screener.get_all_stocks(), max_stocks)
+            if cancel_check and cancel_check():
+                raise _ScanCancelledError("用户已取消扫描")
+            data_prepare = {}
+            prepare_history_cache = getattr(screener, "prepare_history_cache", None)
+            if callable(prepare_history_cache):
+                stock_count = len(stocks)
+                _progress(
+                    progress_callback,
+                    phase="准备行情数据",
+                    message=f"正在批量更新 {stock_count} 只股票的行情缓存...",
+                    done=0,
+                    total=0,
+                    matched=0,
+                    errors=0,
+                )
+                try:
+                    prepared = prepare_history_cache(stocks, workers=threads)
+                    if isinstance(prepared, dict):
+                        data_prepare = prepared
+                    if cancel_check and cancel_check():
+                        raise _ScanCancelledError("用户已取消扫描")
+                    _progress(
+                        progress_callback,
+                        phase="准备行情数据",
+                        message=(
+                            f"批量行情已就绪 {int(data_prepare.get('prepared') or 0)} 只，"
+                            f"直接复用 {int(data_prepare.get('reused') or 0)} 只，"
+                            f"逐股补取 {int(data_prepare.get('needs_full_fetch') or 0)} 只"
+                        ),
+                        done=0,
+                        total=0,
+                        matched=0,
+                        errors=0,
+                    )
+                except _ScanCancelledError:
+                    raise
+                except Exception as exc:
+                    message = str(exc).replace("\n", " ")
+                    data_prepare = {
+                        "enabled": False,
+                        "error": message[:200],
+                    }
             rows = list(_stock_rows(stocks))
             total = len(rows)
+            if total == 0:
+                raise RuntimeError("股票池为空，本次扫描已终止，请检查股票列表数据源")
+            minimum_full_pool = int(config.get("min_full_pool_size") or 0)
+            if (
+                max_stocks <= 0
+                and minimum_full_pool > 0
+                and total < minimum_full_pool
+            ):
+                raise RuntimeError(
+                    f"股票池明显不完整（仅 {total} 只，至少应有 "
+                    f"{minimum_full_pool} 只），本次扫描已终止"
+                )
 
             if max_stocks > 0:
                 config["top_n"] = max_stocks
@@ -487,47 +610,130 @@ def _run_local_stock_screener(
 
             candidates = []
             errors = 0
+            data_errors = 0
+            logic_errors = 0
+            filtered = 0
+            no_data = 0
             done = 0
+            data_dates = Counter()
+            data_sources = Counter()
+            stale_fallback_count = 0
+            error_types = Counter()
+            error_samples = []
             if rows:
-                max_workers = max(1, min(int(threads or 1), total))
+                needs_full_fetch = int(data_prepare.get("needs_full_fetch") or 0)
+                requested_workers = max(1, min(int(threads or 1), total))
+                # 纯本地 pickle + pandas 小任务使用多线程反而更慢；仅缺历史、
+                # 需要联网补取时才保留请求并发。
+                recommended_workers = int(
+                    data_prepare.get("recommended_scan_workers") or 0
+                )
+                if recommended_workers > 0:
+                    max_workers = max(1, min(requested_workers, recommended_workers))
+                else:
+                    max_workers = requested_workers if needs_full_fetch > 0 else 1
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [
                         executor.submit(_run_single_local_stock, screener, row, recent_days)
                         for row in rows
                     ]
+                    last_progress_at = 0.0
                     for future in as_completed(futures):
+                        if cancel_check and cancel_check():
+                            for pending in futures:
+                                pending.cancel()
+                            raise _ScanCancelledError("用户已取消扫描")
                         done += 1
                         try:
-                            record = future.result()
-                            if record:
-                                candidates.append(record)
-                        except Exception:
+                            outcome = future.result()
+                            if isinstance(outcome, dict) and "status" in outcome:
+                                status = outcome.get("status")
+                                record = outcome.get("record")
+                                if outcome.get("data_date"):
+                                    data_dates[str(outcome["data_date"])] += 1
+                                if outcome.get("data_source"):
+                                    data_sources[str(outcome["data_source"])] += 1
+                                if outcome.get("stale_fallback"):
+                                    stale_fallback_count += 1
+                                if status == "matched" and record:
+                                    candidates.append(record)
+                                elif status == "filtered":
+                                    filtered += 1
+                                else:
+                                    no_data += 1
+                            elif outcome:
+                                # 兼容第三方旧版筛选器直接返回记录。
+                                candidates.append(outcome)
+                            else:
+                                filtered += 1
+                        except Exception as exc:
                             errors += 1
-                        _progress(
-                            progress_callback,
-                            phase="筛选中",
-                            message=f"已处理 {done}/{total} 只，命中 {len(candidates)} 只",
-                            done=done,
-                            total=total,
-                            matched=len(candidates),
-                            errors=errors,
-                        )
+                            if isinstance(
+                                exc,
+                                getattr(screener, "HistoryDataSourceError", ()),
+                            ):
+                                data_errors += 1
+                            else:
+                                logic_errors += 1
+                            error_types[exc.__class__.__name__] += 1
+                            if len(error_samples) < 10:
+                                error_samples.append(str(exc).replace("\n", " ")[:240])
+                        now = time.monotonic()
+                        if done == total or now - last_progress_at >= 0.4:
+                            _progress(
+                                progress_callback,
+                                phase="筛选中",
+                                message=f"已处理 {done}/{total} 只，命中 {len(candidates)} 只",
+                                done=done,
+                                total=total,
+                                matched=len(candidates),
+                                errors=errors,
+                            )
+                            last_progress_at = now
 
             candidates.sort(key=lambda item: item.get("综合评分") or 0, reverse=True)
-            top_n = int(config.get("top_n") or len(candidates) or 0)
-            selected = candidates[:top_n] if top_n > 0 else candidates
-            raw_records = _json_safe_records(selected)
+            legacy_top_n = int(config.get("top_n") or 0)
+            # 浏览器端数据量只有百级，返回并导出全部命中。旧脚本的 top_n
+            # 只保留作诊断，不能再被页面误解成仍存在的输出截断上限。
+            result_limit = 0
+            raw_records = _json_safe_records(candidates)
             records = [
                 _normalize_stock_screener_record(record, recent_days)
                 for record in raw_records
             ]
-            _write_records_csv(records, output_path)
             return records, {
                 "scanned": total,
                 "recent_days": recent_days,
                 "source": Path(getattr(screener, "__file__", "stock_screener_2.py")).name,
                 "errors": errors,
+                "data_errors": data_errors,
+                "logic_errors": logic_errors,
                 "candidates": len(candidates),
+                "total_matches": len(candidates),
+                "returned_count": len(records),
+                "result_limit": result_limit,
+                "legacy_top_n": legacy_top_n,
+                "valid_data": max(
+                    0, filtered + len(candidates) - stale_fallback_count
+                ),
+                "filtered": filtered,
+                "no_data": no_data,
+                "stale_fallback_count": stale_fallback_count,
+                "data_coverage_pct": round(
+                    max(0, filtered + len(candidates) - stale_fallback_count)
+                    / total * 100, 2
+                ) if total else 0,
+                "coverage_pct": round(
+                    max(0, filtered + len(candidates) - stale_fallback_count)
+                    / total * 100, 2
+                ) if total else 0,
+                "data_dates": dict(data_dates),
+                "latest_data_date": max(data_dates) if data_dates else "",
+                "data_sources": dict(data_sources),
+                "error_types": dict(error_types),
+                "error_samples": error_samples,
+                "scan_workers": max_workers if rows else 0,
+                "data_prepare": data_prepare,
             }
 
         if max_stocks > 0:
@@ -651,8 +857,6 @@ def _run_legacy_limit_down_rebound(
         str(item.get("股票代码", "")),
     ))
     records = _json_safe_records(all_results)
-    _write_records_csv(records, output_path)
-
     return records, {
         "schema": "legacy_limit_down_rebound",
         "source": Path(getattr(screener, "__file__", A_STOCK_SCREENER_PATH)).name,
@@ -671,6 +875,7 @@ def _run_limit_down_rebound_scan(
     limit_down=None,
     recovery=None,
     progress_callback=None,
+    cancel_check=None,
 ):
     started = time.time()
     screener = _load_external_module("limit_down_rebound", A_STOCK_SCREENER_PATH)
@@ -700,6 +905,7 @@ def _run_limit_down_rebound_scan(
             threads=threads,
             config_overrides={"recent_days": resolved_recent_days},
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
         meta.update({
             "schema": "local_stock_screener",
@@ -709,6 +915,27 @@ def _run_limit_down_rebound_scan(
         raise AttributeError(
             "Unsupported screener interface: expected legacy limit-down API or run_screener()/CONFIG"
         )
+
+    scanned = int(meta.get("scanned") or 0)
+    all_errors = int(meta.get("errors") or 0)
+    raw_valid_data = meta.get("valid_data")
+    valid_data = (
+        int(raw_valid_data)
+        if raw_valid_data is not None
+        else max(0, scanned - all_errors)
+    )
+    if scanned > 0 and valid_data * 5 < scanned * 4:
+        raise RuntimeError(
+            f"历史行情有效覆盖率过低（{valid_data}/{scanned}，"
+            f"数据错误 {int(meta.get('data_errors') or 0)}，"
+            f"规则错误 {int(meta.get('logic_errors') or 0)}，"
+            f"无数据/历史不足 {int(meta.get('no_data') or 0)}，"
+            f"陈旧缓存兜底 {int(meta.get('stale_fallback_count') or 0)}），"
+            "本次结果已作废，请检查行情数据源后重试"
+        )
+    if cancel_check and cancel_check():
+        raise _ScanCancelledError("用户已取消扫描")
+    _write_records_csv(records, output_path)
 
     elapsed = round(time.time() - started, 1)
     return {
@@ -730,7 +957,14 @@ def _wash_pattern_params_from_request():
         "fetch_days": _int_param("fetch_days", 120, 30, 360),
         "recent_days": _int_param("recent_days", 30, 1, 240),
         "workers": _int_param("workers", 12, 1, 32),
-        "data_source": _str_param("data_source", "auto", ("auto", "akshare", "yahoo", "cache")),
+        "data_source": _str_param(
+            "data_source",
+            "auto",
+            ("auto", "sina", "akshare", "yahoo", "cache"),
+        ),
+        "enable_lossy_prescreen": bool(
+            _int_param("enable_lossy_prescreen", 0, 0, 1)
+        ),
     }
 
 
@@ -744,15 +978,18 @@ def _build_wash_pattern_config(scanner, params, output_path):
         recent_days=params["recent_days"],
         workers=params["workers"],
         data_source=params["data_source"],
+        enable_lossy_prescreen=params.get("enable_lossy_prescreen", False),
         output=str(output_path),
     )
 
 
-def _run_wash_pattern_scan(params, progress_callback=None):
+def _run_wash_pattern_scan(params, progress_callback=None, cancel_check=None):
     started = time.time()
     scanner = _load_external_module("wash_pattern", WASH_PATTERN_SCANNER_PATH)
     output_path = _scanner_output_path("wash_pattern_results")
     cfg = _build_wash_pattern_config(scanner, params, output_path)
+    stocks = []
+    max_workers = 0
 
     can_track_progress = all(callable(getattr(scanner, name, None)) for name in (
         "get_stock_pool",
@@ -770,8 +1007,7 @@ def _run_wash_pattern_scan(params, progress_callback=None):
             matched=0,
             errors=0,
         )
-        # 复用扫描器内置的预筛选逻辑（全A扫描时 5000 → 800-1500 只）；
-        # 旧版直接 get_stock_pool 会让 Web 端始终走全量。
+        # resolve_scan_stocks 默认使用完整股票池；有损预筛必须由显式配置开启。
         if callable(getattr(scanner, "resolve_scan_stocks", None)):
             stocks = scanner.resolve_scan_stocks(cfg)
         else:
@@ -779,7 +1015,48 @@ def _run_wash_pattern_scan(params, progress_callback=None):
         if cfg.max_stocks > 0:
             stocks = stocks[: cfg.max_stocks]
         total = len(stocks)
+        if total == 0:
+            raise RuntimeError("洗盘扫描股票池为空，请检查股票列表数据源")
+        minimum_pool_sizes = {"all_a": 4000, "hs300": 200, "zz500": 400}
+        minimum_pool = minimum_pool_sizes.get(cfg.stock_pool, 0)
+        if cfg.max_stocks <= 0 and minimum_pool and total < minimum_pool:
+            raise RuntimeError(
+                f"洗盘股票池明显不完整（仅 {total} 只，至少应有 "
+                f"{minimum_pool} 只），本次扫描已终止"
+            )
         today = scanner.parse_as_of_date(cfg)
+        prepare_meta = {}
+        if cancel_check and cancel_check():
+            raise _ScanCancelledError("用户已取消扫描")
+
+        if callable(getattr(scanner, "prepare_scan_cache", None)) and stocks:
+            _progress(
+                progress_callback,
+                phase="批量更新行情",
+                message=f"正在批量更新 {total} 只股票的最新行情...",
+                done=0,
+                total=0,
+                matched=0,
+                errors=0,
+            )
+            prepare_meta = scanner.prepare_scan_cache(stocks, cfg)
+            if cancel_check and cancel_check():
+                raise _ScanCancelledError("用户已取消扫描")
+            prepared = int(prepare_meta.get("prepared") or 0)
+            reused = int(prepare_meta.get("reused") or 0)
+            needs_fetch = int(prepare_meta.get("needs_full_fetch") or 0)
+            _progress(
+                progress_callback,
+                phase="批量更新完成",
+                message=(
+                    f"已批量更新 {prepared} 只，直接复用 {reused} 只，"
+                    f"需单独补历史 {needs_fetch} 只"
+                ),
+                done=0,
+                total=0,
+                matched=0,
+                errors=0,
+            )
 
         _progress(
             progress_callback,
@@ -793,38 +1070,100 @@ def _run_wash_pattern_scan(params, progress_callback=None):
 
         found = []
         errors = 0
+        data_errors = 0
+        logic_errors = 0
+        error_types = Counter()
+        error_samples = []
+        data_dates = Counter()
+        data_sources = Counter()
+        stale_fallback_count = 0
+        short_history_count = 0
         done = 0
+
+        diagnostic_scanner = getattr(scanner, "scan_stock_with_diagnostics", None)
+
+        def scan_one(stock):
+            if callable(diagnostic_scanner):
+                return diagnostic_scanner(stock, cfg, today)
+            return scanner.scan_stock(stock, cfg, today)
+
+        def consume_scan_result(value):
+            nonlocal stale_fallback_count, short_history_count
+            diagnostics = {}
+            rows = value
+            if (
+                isinstance(value, tuple)
+                and len(value) == 2
+                and isinstance(value[1], dict)
+            ):
+                rows, diagnostics = value
+            found.extend(rows or [])
+            if diagnostics.get("data_date"):
+                data_dates[str(diagnostics["data_date"])] += 1
+            if diagnostics.get("data_source"):
+                data_sources[str(diagnostics["data_source"])] += 1
+            if diagnostics.get("stale_fallback"):
+                stale_fallback_count += 1
+            if diagnostics.get("short_history"):
+                short_history_count += 1
+
         if stocks:
-            max_workers = max(1, min(int(cfg.workers or 1), total))
+            requested_workers = max(1, min(int(cfg.workers or 1), total))
+            needs_full_fetch = int(prepare_meta.get("needs_full_fetch") or 0)
+            max_workers = requested_workers if needs_full_fetch > 0 else 1
             if max_workers <= 1:
+                last_emit = 0.0
                 for stock in stocks:
+                    if cancel_check and cancel_check():
+                        raise _ScanCancelledError("用户已取消扫描")
                     done += 1
                     try:
-                        found.extend(scanner.scan_stock(stock, cfg, today))
-                    except Exception:
+                        consume_scan_result(scan_one(stock))
+                    except Exception as exc:
                         errors += 1
-                    _progress(
-                        progress_callback,
-                        phase="扫描中",
-                        message=f"已处理 {done}/{total} 只，命中 {len(found)} 条",
-                        done=done,
-                        total=total,
-                        matched=len(found),
-                        errors=errors,
-                    )
+                        if isinstance(exc, getattr(scanner, "DailyDataSourceError", ())):
+                            data_errors += 1
+                        else:
+                            logic_errors += 1
+                        error_types[exc.__class__.__name__] += 1
+                        if len(error_samples) < 10:
+                            error_samples.append(str(exc).replace("\n", " ")[:240])
+                    now = time.monotonic()
+                    if done == total or now - last_emit >= 0.4:
+                        last_emit = now
+                        _progress(
+                            progress_callback,
+                            phase="扫描中",
+                            message=f"已处理 {done}/{total} 只，命中 {len(found)} 条",
+                            done=done,
+                            total=total,
+                            matched=len(found),
+                            errors=errors,
+                        )
             else:
                 last_emit = 0.0
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [
-                        executor.submit(scanner.scan_stock, stock, cfg, today)
+                        executor.submit(scan_one, stock)
                         for stock in stocks
                     ]
                     for future in as_completed(futures):
+                        if cancel_check and cancel_check():
+                            for pending in futures:
+                                pending.cancel()
+                            raise _ScanCancelledError("用户已取消扫描")
                         done += 1
                         try:
-                            found.extend(future.result())
-                        except Exception:
+                            consume_scan_result(future.result())
+                        except Exception as exc:
                             errors += 1
+                            if isinstance(exc, getattr(scanner, "DailyDataSourceError", ())):
+                                data_errors += 1
+                            else:
+                                logic_errors += 1
+                            error_types[exc.__class__.__name__] += 1
+                            if len(error_samples) < 10:
+                                error_samples.append(str(exc).replace("\n", " ")[:240])
                         # 进度回调节流：每只都打锁更新会产生数千次 _update_scan_job，
                         # 改为最多每 0.5s 一次（最后一只必报）
                         now = time.time()
@@ -857,17 +1196,38 @@ def _run_wash_pattern_scan(params, progress_callback=None):
         result_df = scanner.scan(cfg, show_progress=False)
         total = int(cfg.max_stocks or 0)
         errors = 0
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    result_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+        data_errors = 0
+        logic_errors = 0
+        error_types = Counter()
+        error_samples = []
+        prepare_meta = {}
+        data_dates = Counter()
+        data_sources = Counter()
+        stale_fallback_count = 0
+        short_history_count = 0
 
     records = _json_safe_records(result_df)
+    if not data_dates:
+        data_dates.update(
+            str(record.get("最新行情日"))
+            for record in records
+            if record.get("最新行情日")
+        )
+    valid_data = max(0, total - errors - stale_fallback_count)
+    if total > 0 and valid_data * 5 < total * 4:
+        raise RuntimeError(
+            f"洗盘行情有效覆盖率过低（{valid_data}/{total}，"
+            f"数据错误 {data_errors}，规则错误 {logic_errors}，"
+            f"陈旧缓存兜底 {stale_fallback_count}），"
+            "本次结果已作废，请检查行情数据源后重试"
+        )
+    _write_records_csv(records, output_path)
     return {
         "success": True,
         "data": records,
         "count": len(records),
         "elapsed_sec": round(time.time() - started, 1),
-        "output": str(output_path),
+        "output": str(output_path) if output_path.exists() else "",
         "meta": {
             "mode": cfg.scan_mode,
             "pool": cfg.stock_pool,
@@ -876,6 +1236,24 @@ def _run_wash_pattern_scan(params, progress_callback=None):
             "workers": cfg.workers,
             "scanned": total,
             "errors": errors,
+            "data_errors": data_errors,
+            "logic_errors": logic_errors,
+            "stale_fallback_count": stale_fallback_count,
+            "short_history_count": short_history_count,
+            "candidates": len(records),
+            "total_matches": len(records),
+            "returned_count": len(records),
+            "result_limit": 0,
+            "valid_data": valid_data,
+            "data_coverage_pct": round(valid_data / total * 100, 2) if total else 0,
+            "coverage_pct": round(valid_data / total * 100, 2) if total else 0,
+            "latest_data_date": max(data_dates) if data_dates else "",
+            "data_dates": dict(data_dates),
+            "data_sources": dict(data_sources),
+            "error_types": dict(error_types),
+            "error_samples": error_samples,
+            "scan_workers": max_workers if stocks else 0,
+            "data_prepare": prepare_meta,
         },
     }
 
@@ -883,15 +1261,23 @@ def _run_wash_pattern_scan(params, progress_callback=None):
 @scanner_bp.route("/api/scanners/wash-pattern", methods=["GET", "POST"])
 def wash_pattern_scan():
     """Run the external wash pattern scanner and return table-ready JSON."""
+    params = _wash_pattern_params_from_request()
+    job_kind = (
+        "breakout_base" if params.get("mode") == "breakout_base"
+        else "wash_pattern"
+    )
     lock = _EXTERNAL_SCAN_LOCKS["wash_pattern"]
     if not lock.acquire(blocking=False):
+        active_job = _get_active_scan_job(job_kind)
         return jsonify({
             "success": False,
             "error": "洗盘形态扫描正在运行，请稍后再试",
+            "job_id": active_job.get("id") if active_job else "",
+            "job": active_job,
         }), 409
 
     try:
-        return jsonify(_run_wash_pattern_scan(_wash_pattern_params_from_request()))
+        return jsonify(_run_wash_pattern_scan(params))
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -903,6 +1289,8 @@ def _run_wash_pattern_job(job_id, params):
     lock = _EXTERNAL_SCAN_LOCKS["wash_pattern"]
 
     def progress_callback(**updates):
+        if _scan_cancel_requested(job_id):
+            raise _ScanCancelledError("用户已取消扫描")
         _update_scan_job(job_id, status="running", **updates)
 
     try:
@@ -917,7 +1305,13 @@ def _run_wash_pattern_job(job_id, params):
             matched=0,
             errors=0,
         )
-        result = _run_wash_pattern_scan(params, progress_callback=progress_callback)
+        result = _run_wash_pattern_scan(
+            params,
+            progress_callback=progress_callback,
+            cancel_check=lambda: _scan_cancel_requested(job_id),
+        )
+        if _scan_cancel_requested(job_id):
+            raise _ScanCancelledError("用户已取消扫描")
         meta = result.get("meta") or {}
         scanned = int(meta.get("scanned") or 0)
         current = _get_scan_job(job_id) or {}
@@ -931,6 +1325,15 @@ def _run_wash_pattern_job(job_id, params):
             matched=result.get("count", 0),
             errors=meta.get("errors", 0),
             result=result,
+            finished_at=time.time(),
+        )
+    except _ScanCancelledError as e:
+        _update_scan_job(
+            job_id,
+            status="cancelled",
+            phase="已取消",
+            message="扫描已取消",
+            error=str(e),
             finished_at=time.time(),
         )
     except Exception as e:
@@ -950,16 +1353,27 @@ def _run_wash_pattern_job(job_id, params):
 @scanner_bp.route("/api/scanners/wash-pattern/start", methods=["POST"])
 def wash_pattern_scan_start():
     """Start the wash pattern scanner in a background job."""
+    params = _wash_pattern_params_from_request()
+    job_kind = (
+        "breakout_base" if params.get("mode") == "breakout_base"
+        else "wash_pattern"
+    )
     lock = _EXTERNAL_SCAN_LOCKS["wash_pattern"]
     if not lock.acquire(blocking=False):
+        active_job = _get_active_scan_job(job_kind)
         return jsonify({
             "success": False,
             "error": "洗盘形态扫描正在运行，请稍后再试",
+            "job_id": active_job.get("id") if active_job else "",
+            "job": active_job,
         }), 409
 
     try:
-        params = _wash_pattern_params_from_request()
-        job = _create_scan_job("wash_pattern")
+        job = _create_scan_job(
+            job_kind,
+            params=params,
+            cancel_supported=True,
+        )
         thread = Thread(
             target=_run_wash_pattern_job,
             args=(job["id"], params),
@@ -1004,6 +1418,8 @@ def _run_limit_down_rebound_job(job_id, params):
     lock = _EXTERNAL_SCAN_LOCKS["limit_down_rebound"]
 
     def progress_callback(**updates):
+        if _scan_cancel_requested(job_id):
+            raise _ScanCancelledError("用户已取消扫描")
         _update_scan_job(job_id, status="running", **updates)
 
     try:
@@ -1025,7 +1441,10 @@ def _run_limit_down_rebound_job(job_id, params):
             limit_down=params.get("limit_down"),
             recovery=params.get("recovery"),
             progress_callback=progress_callback,
+            cancel_check=lambda: _scan_cancel_requested(job_id),
         )
+        if _scan_cancel_requested(job_id):
+            raise _ScanCancelledError("用户已取消扫描")
         meta = result.get("meta") or {}
         scanned = int(meta.get("scanned") or 0)
         _update_scan_job(
@@ -1035,9 +1454,18 @@ def _run_limit_down_rebound_job(job_id, params):
             message=f"筛选完成，发现 {result.get('count', 0)} 条结果",
             done=scanned or int(_get_scan_job(job_id).get("done") or 0),
             total=scanned or int(_get_scan_job(job_id).get("total") or 0),
-            matched=result.get("count", 0),
+            matched=meta.get("total_matches", result.get("count", 0)),
             errors=meta.get("errors", 0),
             result=result,
+            finished_at=time.time(),
+        )
+    except _ScanCancelledError as e:
+        _update_scan_job(
+            job_id,
+            status="cancelled",
+            phase="已取消",
+            message="扫描已取消",
+            error=str(e),
             finished_at=time.time(),
         )
     except Exception as e:
@@ -1059,9 +1487,12 @@ def limit_down_rebound_scan_start():
     """Start the stock screener in a background job."""
     lock = _EXTERNAL_SCAN_LOCKS["limit_down_rebound"]
     if not lock.acquire(blocking=False):
+        active_job = _get_active_scan_job("limit_down_rebound")
         return jsonify({
             "success": False,
             "error": "A股条件筛选正在运行，请稍后再试",
+            "job_id": active_job.get("id") if active_job else "",
+            "job": active_job,
         }), 409
 
     try:
@@ -1072,7 +1503,11 @@ def limit_down_rebound_scan_start():
             "limit_down": _optional_float_param("limit_down"),
             "recovery": _optional_float_param("recovery"),
         }
-        job = _create_scan_job("limit_down_rebound")
+        job = _create_scan_job(
+            "limit_down_rebound",
+            params=params,
+            cancel_supported=True,
+        )
         thread = Thread(
             target=_run_limit_down_rebound_job,
             args=(job["id"], params),
@@ -1085,8 +1520,43 @@ def limit_down_rebound_scan_start():
         raise
 
 
-@scanner_bp.route("/api/scanners/jobs/<job_id>", methods=["GET"])
+def _request_scan_cancel(job_id):
+    with _SCAN_JOBS_LOCK:
+        job = _SCAN_JOBS.get(job_id)
+        if not job:
+            return None
+        if job.get("status") not in {"completed", "failed", "cancelled", "canceled"}:
+            job.update({
+                "cancel_requested": True,
+                "status": "cancelling",
+                "phase": "取消中",
+                "message": "正在停止尚未执行的扫描任务...",
+            })
+        return _job_snapshot(job)
+
+
+@scanner_bp.route("/api/scanners/jobs/current", methods=["GET"])
+def scanner_current_job():
+    kind = request.args.get("kind") or None
+    job = _get_active_scan_job(kind)
+    return jsonify({"success": True, "job": job})
+
+
+@scanner_bp.route("/api/scanners/jobs/<job_id>/cancel", methods=["POST"])
+def scanner_job_cancel(job_id):
+    job = _request_scan_cancel(job_id)
+    if not job:
+        return jsonify({"success": False, "error": "扫描任务不存在或已过期"}), 404
+    return jsonify({"success": True, "job": job})
+
+
+@scanner_bp.route("/api/scanners/jobs/<job_id>", methods=["GET", "DELETE"])
 def scanner_job_status(job_id):
+    if request.method == "DELETE":
+        job = _request_scan_cancel(job_id)
+        if not job:
+            return jsonify({"success": False, "error": "扫描任务不存在或已过期"}), 404
+        return jsonify({"success": True, "job": job})
     job = _get_scan_job(job_id)
     if not job:
         return jsonify({"success": False, "error": "扫描任务不存在或已过期"}), 404

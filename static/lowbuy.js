@@ -479,39 +479,13 @@ function setScanButtonsBusy(busy, activeBtnId, busyText, normalText) {
 }
 
 async function scanCandidates() {
-    runExternalScannerJob({
-        startUrl: `/api/lowbuy/candidates/start?min_score=${getScanSettings().min_score}`,
-        statusUrlBase: '/api/scanners/jobs/',
-        btnId: 'scan-btn',
-        normalText: '全A低吸扫描',
-        busyText: '扫描中...',
-        loadingText: '正在启动全A低吸扫描...',
-        title: '全A低吸扫描',
-        emptyText: '未发现符合条件的低吸候选',
-        renderResult: (result) => renderCandidates(result.data || []),
-    });
+    runExternalScannerJob(scannerJobOptions('lowbuy_candidates'));
 }
 
 // ========== 逆势英雄扫描 ==========
 function scanHeroes() {
     // 改为后台任务模式：避免全市场扫描时 HTTP 请求超时
-    runExternalScannerJob({
-        startUrl: '/api/hero/scan/start',
-        statusUrlBase: '/api/scanners/jobs/',
-        btnId: 'hero-scan-btn',
-        normalText: '🦸 逆势英雄',
-        busyText: '扫描中...',
-        loadingText: '正在扫描逆势英雄（暴跌日"该跌不跌"的强势股）...',
-        title: '逆势英雄扫描',
-        renderResult: (result) => {
-            if (result && result.success === false) {
-                document.getElementById('candidates-panel').innerHTML =
-                    `<div class="error-msg">扫描失败: ${escapeHtml(result.error || '未知错误')}</div>`;
-                return;
-            }
-            renderHeroes(result || {});
-        },
-    });
+    runExternalScannerJob(scannerJobOptions('hero_scan'));
 }
 
 function renderHeroes(result) {
@@ -531,6 +505,7 @@ function renderHeroes(result) {
 
     if (!heroes.length) {
         panel.innerHTML = headerHtml + '<div class="empty-msg">未发现逆势英雄（无符合条件的逆势强势股）</div>';
+        persistScan('heroes', result);
         return;
     }
 
@@ -569,6 +544,7 @@ function renderCandidates(candidates) {
     const panel = document.getElementById('candidates-panel');
     if (!candidates.length) {
         panel.innerHTML = '<div class="empty-msg">未发现符合条件的低吸候选</div>';
+        persistScan('candidates', candidates);
         return;
     }
 
@@ -734,30 +710,127 @@ function setupCodeAutocomplete() {
     });
 }
 
+function scannerMetaNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function scannerLatestDataDate(meta, rows) {
+    const prepared = meta?.data_prepare || {};
+    const direct = meta?.latest_data_date
+        || meta?.data_date
+        || meta?.as_of_date
+        || prepared.latest_data_date
+        || prepared.latest_quote_date
+        || prepared.data_date
+        || prepared.as_of_date;
+    if (direct) return String(direct).slice(0, 10);
+
+    const dates = [];
+    (rows || []).forEach((row) => {
+        const value = row?.['数据日期'] || row?.['最新行情日'] || row?.['最新日期'];
+        if (value && /^\d{4}-\d{2}-\d{2}/.test(String(value))) dates.push(String(value).slice(0, 10));
+    });
+    return dates.sort().pop() || '';
+}
+
+function scannerResultMeta({ rows, count, elapsed, meta }) {
+    const explicitReturnedCount = scannerMetaNumber(meta?.returned_count);
+    const responseCount = scannerMetaNumber(count);
+    const returnedCount = explicitReturnedCount
+        ?? ((responseCount !== null && (responseCount > 0 || rows.length === 0)) ? responseCount : rows.length);
+    const totalMatches = scannerMetaNumber(meta?.total_matches)
+        ?? scannerMetaNumber(meta?.candidates)
+        ?? returnedCount;
+    const resultLimit = scannerMetaNumber(meta?.result_limit)
+        ?? scannerMetaNumber(meta?.top_n);
+    const scanned = scannerMetaNumber(meta?.scanned);
+    const errors = scannerMetaNumber(meta?.errors) ?? 0;
+    const dataErrors = scannerMetaNumber(meta?.data_errors) ?? errors;
+    const logicErrors = scannerMetaNumber(meta?.logic_errors) ?? 0;
+    const noData = scannerMetaNumber(meta?.no_data) ?? 0;
+    const shortHistory = scannerMetaNumber(meta?.short_history_count) ?? 0;
+    const staleFallback = scannerMetaNumber(meta?.stale_fallback_count) ?? 0;
+    const completedBarsOnly = Boolean(meta?.intraday_completed_bars_only
+        || meta?.data_prepare?.intraday_completed_bars_only);
+    let coverage = scannerMetaNumber(meta?.coverage_pct);
+    if (coverage === null) coverage = scannerMetaNumber(meta?.data_coverage_pct);
+    if (coverage === null) coverage = scannerMetaNumber(meta?.coverage);
+    if (coverage !== null && coverage >= 0 && coverage <= 1) coverage *= 100;
+    if (coverage === null && scanned && scanned > 0) {
+        coverage = Math.max(0, (scanned - errors) / scanned * 100);
+    }
+    const latestDataDate = scannerLatestDataDate(meta, rows);
+
+    const parts = [];
+    if (totalMatches > returnedCount) {
+        parts.push(`共命中 ${totalMatches} 条，展示 ${returnedCount} 条`);
+    } else {
+        parts.push(`发现 ${returnedCount} 条`);
+    }
+    if (resultLimit && totalMatches > returnedCount) parts.push(`结果上限 ${resultLimit}`);
+    if (scanned !== null) parts.push(`扫描 ${scanned} 只`);
+    if (scanned !== null || dataErrors > 0) parts.push(`数据错误 ${dataErrors}`);
+    if (logicErrors > 0) parts.push(`规则错误 ${logicErrors}`);
+    if (noData > 0) parts.push(`无数据/历史不足 ${noData}`);
+    if (shortHistory > 0) parts.push(`短历史 ${shortHistory}`);
+    if (staleFallback > 0) parts.push(`陈旧缓存兜底 ${staleFallback}`);
+    if (coverage !== null) parts.push(`覆盖率 ${coverage.toFixed(1)}%`);
+    if (latestDataDate) parts.push(`数据日 ${latestDataDate}`);
+    if (completedBarsOnly) parts.push('盘中按上一完整交易日');
+    parts.push(`耗时 ${elapsed ?? '-'} 秒`);
+
+    return {
+        returnedCount,
+        totalMatches,
+        errors,
+        dataErrors,
+        logicErrors,
+        noData,
+        shortHistory,
+        staleFallback,
+        summary: parts.join('，'),
+    };
+}
+
 function renderExternalScannerResults({ title, columns, rows, count, elapsed, output, meta, emptyText }) {
     const panel = document.getElementById('candidates-panel');
+    rows = Array.isArray(rows) ? rows : [];
+    meta = meta || {};
+    const resultMeta = scannerResultMeta({ rows, count, elapsed, meta });
+    // 空结果也必须覆盖上一次扫描，否则刷新后会错误恢复旧的非空结果。
+    persistScan('external', { title, columns, rows, count, elapsed, output, meta });
     if (!rows.length) {
+        const warning = resultMeta.dataErrors > 0 || resultMeta.logicErrors > 0
+            || resultMeta.staleFallback > 0
+            ? '<div class="scanner-output" style="color:var(--accent-warning)">本次存在处理错误，空结果可能不完整，请结合错误数判断。</div>'
+            : '';
         panel.innerHTML = `
             <div class="scanner-result-card">
                 <div class="scanner-result-header">
                     <h2>${escapeHtml(title)}</h2>
-                    <span class="scanner-meta">耗时 ${escapeHtml(elapsed ?? '-')} 秒</span>
+                    <span class="scanner-meta">${escapeHtml(resultMeta.summary)}</span>
                 </div>
+                ${warning}
                 <div class="empty-msg">${escapeHtml(emptyText)}</div>
             </div>
         `;
         return;
     }
 
-    const scannedText = meta.scanned ? `，扫描 ${meta.scanned} 只` : '';
     const outputText = output ? `<div class="scanner-output">结果文件: ${escapeHtml(output)}</div>` : '';
+    const warningText = resultMeta.dataErrors > 0 || resultMeta.logicErrors > 0 || resultMeta.staleFallback > 0
+        ? `<div class="scanner-output" style="color:var(--accent-warning)">⚠ 数据错误 ${resultMeta.dataErrors}，规则错误 ${resultMeta.logicErrors}，陈旧缓存兜底 ${resultMeta.staleFallback}；结果覆盖范围可能不完整。</div>`
+        : '';
     panel.innerHTML = `
         <div class="scanner-result-card">
             <div class="scanner-result-header">
                 <h2>${escapeHtml(title)}</h2>
-                <span class="scanner-meta">发现 ${count} 条${scannedText}，耗时 ${escapeHtml(elapsed ?? '-')} 秒</span>
+                <span class="scanner-meta">${escapeHtml(resultMeta.summary)}</span>
             </div>
             ${outputText}
+            ${warningText}
             <div class="itable-mount"></div>
         </div>
     `;
@@ -766,7 +839,6 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
     rows.forEach((r) => { if (!r._rowClass && r['状态']) r._rowClass = STATUS_CLASS[r['状态']] || ''; });
 
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows, exportName: title });
-    persistScan('external', { title, columns, rows, count, elapsed, output, meta });
 }
 
 function analyzeLowBuyByCode(code) {
@@ -788,5 +860,5 @@ document.addEventListener('DOMContentLoaded', () => {
     setupCodeAutocomplete();
     setupScanSettings();
     updateWatchlistBtn();
-    restoreLastScan();
+    if (!restoreActiveScannerJob()) restoreLastScan();
 });

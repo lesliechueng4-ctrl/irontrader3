@@ -3,7 +3,11 @@
 在主扫描前使用实时数据快速过滤，减少70%数据下载量
 """
 
-def pre_screen_wash_candidates(stock_pool='all_a') -> list:  # -> list[tuple[str, str]]
+def pre_screen_wash_candidates(
+    stock_pool="all_a",
+    *,
+    allow_lossy=False,
+) -> list:  # -> list[tuple[str, str]]
     """
     快速预筛选：仅保留符合基础条件的股票
 
@@ -26,6 +30,10 @@ def pre_screen_wash_candidates(stock_pool='all_a') -> list:  # -> list[tuple[str
         符合条件的 (股票代码, 股票名称) 列表。返回名称是为了让最终结果文件
         的“名称”列有值（StockInfo 需要 name），避免名称列空白。
     """
+    if not allow_lossy:
+        print("[wash pre-screen] disabled: this filter can omit valid patterns")
+        return []
+
     try:
         import akshare as ak
 

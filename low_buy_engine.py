@@ -494,7 +494,12 @@ class LowBuyEngine:
             return pd.DataFrame()
         return pd.DataFrame(rows).drop_duplicates(subset=['代码'], keep='first').reset_index(drop=True)
 
-    def scan_candidates(self, min_score: float = 55, progress_callback=None) -> List[dict]:
+    def scan_candidates(
+        self,
+        min_score: float = 55,
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[dict]:
         """
         全A股扫描低吸候选
         使用全A实时行情做初筛，再精细评分
@@ -507,6 +512,10 @@ class LowBuyEngine:
         """
         print("开始全A股扫描低吸候选...")
 
+        def ensure_not_cancelled():
+            if cancel_check and cancel_check():
+                raise RuntimeError("用户已取消扫描")
+
         def emit_progress(**updates):
             if not progress_callback:
                 return
@@ -515,6 +524,7 @@ class LowBuyEngine:
             except Exception:
                 pass
         
+        ensure_not_cancelled()
         # Step 1: 预先获取市场情绪
         emit_progress(
             phase="市场情绪",
@@ -525,6 +535,7 @@ class LowBuyEngine:
             errors=0,
         )
         self._cached_sentiment = self.sentiment_analyzer.analyze()
+        ensure_not_cancelled()
         self._sentiment_cached_at = time.time()
         print(f"市场情绪: {self._cached_sentiment['phase']} (得分: {self._cached_sentiment['score']})")
 
@@ -538,6 +549,7 @@ class LowBuyEngine:
             errors=0,
         )
         candidates = self._pre_screen(progress_callback=emit_progress)
+        ensure_not_cancelled()
         print(f"初筛通过: {len(candidates)} 只")
 
         # Step 2.5: 批量预加载共享数据（实时行情 + K线并发预热），
@@ -547,6 +559,7 @@ class LowBuyEngine:
                 self._preload_shared_data(candidates)
             except Exception as e:
                 print(f"⚠️ 预加载失败（不影响扫描）: {e}")
+            ensure_not_cancelled()
 
         # Step 3: 精细评分（并发化）
         # 共享数据已预热 + 各股票缓存键互不相同，线程化是低风险的，
@@ -577,6 +590,10 @@ class LowBuyEngine:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_score_one, code): code for code in candidates}
                 for future in as_completed(futures):
+                    if cancel_check and cancel_check():
+                        for pending in futures:
+                            pending.cancel()
+                        raise RuntimeError("用户已取消扫描")
                     with lock:
                         done += 1
                         try:
@@ -600,6 +617,7 @@ class LowBuyEngine:
                             errors=cur_errors,
                         )
 
+        ensure_not_cancelled()
         results.sort(key=lambda x: x['total_score'], reverse=True)
         print(f"扫描完成! 发现 {len(results)} 只候选股 (得分 >= {min_score})")
         return results

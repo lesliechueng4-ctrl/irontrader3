@@ -2,7 +2,14 @@
 # Merged features from IronTrader (Rule-based) and IronTrader2 (AI-based)
 
 from flask import Flask, jsonify, request, render_template
-from scanner_routes import scanner_bp, _create_scan_job, _get_scan_job, _update_scan_job
+from scanner_routes import (
+    scanner_bp,
+    _create_scan_job,
+    _get_active_scan_job,
+    _get_scan_job,
+    _scan_cancel_requested,
+    _update_scan_job,
+)
 from threading import Lock, Thread
 from logger_config import get_logger
 from config import FlaskConfig, ChipQualityConfig, APIConfig
@@ -559,6 +566,8 @@ def lowbuy_candidates():
 
 def _run_lowbuy_candidates_job(job_id, min_score):
     def progress_callback(**updates):
+        if _scan_cancel_requested(job_id):
+            raise RuntimeError('用户已取消扫描')
         _update_scan_job(job_id, status='running', **updates)
 
     try:
@@ -578,7 +587,10 @@ def _run_lowbuy_candidates_job(job_id, min_score):
         results = engine.scan_candidates(
             min_score=min_score,
             progress_callback=progress_callback,
+            cancel_check=lambda: _scan_cancel_requested(job_id),
         )
+        if _scan_cancel_requested(job_id):
+            raise RuntimeError('用户已取消扫描')
         payload = {
             'success': True,
             'data': results,
@@ -603,6 +615,16 @@ def _run_lowbuy_candidates_job(job_id, min_score):
             finished_at=time.time(),
         )
     except Exception as e:
+        if _scan_cancel_requested(job_id):
+            _update_scan_job(
+                job_id,
+                status='cancelled',
+                phase='已取消',
+                message='扫描已取消',
+                error=_safe_error_text(e),
+                finished_at=time.time(),
+            )
+            return
         logger.error("全A低吸扫描任务失败", exc_info=True)
         error_text = _safe_error_text(e)
         _update_scan_job(
@@ -621,11 +643,21 @@ def _run_lowbuy_candidates_job(job_id, min_score):
 def lowbuy_candidates_start():
     """后台启动全A低吸候选扫描"""
     if not _LOWBUY_CANDIDATES_LOCK.acquire(blocking=False):
-        return jsonify({'success': False, 'error': '全A低吸扫描正在运行，请稍后再试'}), 409
+        active_job = _get_active_scan_job('lowbuy_candidates')
+        return jsonify({
+            'success': False,
+            'error': '全A低吸扫描正在运行，请稍后再试',
+            'job_id': active_job.get('id') if active_job else '',
+            'job': active_job,
+        }), 409
 
     try:
         min_score = float(request.args.get('min_score', APIConfig.LOWBUY_DEFAULT_MIN_SCORE))
-        job = _create_scan_job('lowbuy_candidates')
+        job = _create_scan_job(
+            'lowbuy_candidates',
+            params={'min_score': min_score},
+            cancel_supported=True,
+        )
         thread = Thread(
             target=_run_lowbuy_candidates_job,
             args=(job['id'], min_score),
@@ -705,7 +737,10 @@ def hero_scan():
             min_gain_pct=min_gain,
             max_turnover=max_turnover,
             lookback_days=lookback,
+            cancel_check=lambda: _scan_cancel_requested(job_id),
         )
+        if _scan_cancel_requested(job_id):
+            raise RuntimeError('用户已取消扫描')
         return jsonify(result)
     finally:
         _HERO_SCAN_LOCK.release()
@@ -734,6 +769,16 @@ def _run_hero_scan_job(job_id: str, min_gain: float, max_turnover: float, lookba
             finished_at=time.time(),
         )
     except Exception as e:
+        if _scan_cancel_requested(job_id):
+            _update_scan_job(
+                job_id,
+                status='cancelled',
+                phase='已取消',
+                message='扫描已取消',
+                error=str(e),
+                finished_at=time.time(),
+            )
+            return
         logger.error("逆势英雄扫描任务失败", exc_info=True)
         _update_scan_job(
             job_id,
@@ -751,13 +796,27 @@ def _run_hero_scan_job(job_id: str, min_gain: float, max_turnover: float, lookba
 def hero_scan_start():
     """后台启动逆势英雄扫描，返回 job_id，进度通过 /api/scanners/jobs/<job_id> 查询"""
     if not _HERO_SCAN_LOCK.acquire(blocking=False):
-        return jsonify({'success': False, 'error': '逆势英雄扫描正在运行，请稍后再试'}), 409
+        active_job = _get_active_scan_job('hero_scan')
+        return jsonify({
+            'success': False,
+            'error': '逆势英雄扫描正在运行，请稍后再试',
+            'job_id': active_job.get('id') if active_job else '',
+            'job': active_job,
+        }), 409
     try:
         min_gain = float(request.args.get('min_gain', 3.0))
         max_turnover = float(request.args.get('max_turnover', 25.0))
         lookback = int(request.args.get('lookback', 10))
 
-        job = _create_scan_job('hero_scan')
+        job = _create_scan_job(
+            'hero_scan',
+            params={
+                'min_gain': min_gain,
+                'max_turnover': max_turnover,
+                'lookback': lookback,
+            },
+            cancel_supported=True,
+        )
         thread = Thread(
             target=_run_hero_scan_job,
             args=(job['id'], min_gain, max_turnover, lookback),

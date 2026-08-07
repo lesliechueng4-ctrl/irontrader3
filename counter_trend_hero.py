@@ -272,6 +272,7 @@ class CounterTrendHeroScanner:
         min_gain_pct: float = 3.0,
         max_turnover: float = 25.0,
         lookback_days: int = 10,
+        cancel_check=None,
     ) -> Dict:
         """
         扫描逆势英雄股
@@ -313,7 +314,12 @@ class CounterTrendHeroScanner:
 
         logger.info("=== 逆势英雄扫描 ===")
 
+        def ensure_not_cancelled():
+            if cancel_check and cancel_check():
+                raise RuntimeError("用户已取消扫描")
+
         # Step 1: 判断市场环境
+        ensure_not_cancelled()
         logger.info("[1/4] 判断市场环境...")
         sh_change = sz_change = 0
         market_condition = '未知'
@@ -351,6 +357,8 @@ class CounterTrendHeroScanner:
             except Exception as index_error:
                 logger.warning(f"   [WARN] 获取指数失败: {index_error}")
                 logger.info("   [INFO] 继续扫描（无市场环境判断）...")
+
+        ensure_not_cancelled()
 
         # Step 2: 获取全市场行情
         logger.info("[2/4] 获取全市场行情...")
@@ -407,6 +415,8 @@ class CounterTrendHeroScanner:
                 'index_change': {'sh': sh_change, 'sz': sz_change},
             }
 
+        ensure_not_cancelled()
+
         # Step 3: 初筛——该跌不跌
         logger.info(f"[3/4] 筛选逆势股（涨幅 > {min_gain_pct}%）...")
         filtered = df_spot[
@@ -447,10 +457,12 @@ class CounterTrendHeroScanner:
         candidate_codes = filtered['代码'].tolist()
         current_volume_map = dict(zip(filtered['代码'], filtered.get('成交量', pd.Series(dtype=float))))
         prior_metric_map = self._fetch_prior_metrics(candidate_codes, lookback_days, current_volume_map)
+        ensure_not_cancelled()
 
         heroes = []
 
         for _, row in filtered.iterrows():
+            ensure_not_cancelled()
             code = row['代码']
             name = row['名称']
             change_pct = row['涨跌幅']
@@ -539,6 +551,7 @@ class CounterTrendHeroScanner:
 
         # 按评分排序
         heroes.sort(key=lambda x: x['score'], reverse=True)
+        ensure_not_cancelled()
 
         logger.info(f"   [OK] 发现 {len(heroes)} 只逆势英雄")
         logger.info(f"      涨停英雄: {sum(1 for h in heroes if h['hero_level'] == '涨停英雄')} 只")

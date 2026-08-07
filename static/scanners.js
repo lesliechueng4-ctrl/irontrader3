@@ -41,27 +41,123 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const ACTIVE_SCANNER_JOB_KEY = 'irontrader_active_scanner_job_v1';
+const SCANNER_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'canceled']);
+const scannerProgressState = new Map();
+let activeScannerRuntime = null;
+
+function scannerSessionGet() {
+    try {
+        return JSON.parse(sessionStorage.getItem(ACTIVE_SCANNER_JOB_KEY) || 'null');
+    } catch (e) {
+        return null;
+    }
+}
+
+function scannerSessionSet(value) {
+    try {
+        sessionStorage.setItem(ACTIVE_SCANNER_JOB_KEY, JSON.stringify(value));
+    } catch (e) { /* sessionStorage may be unavailable */ }
+}
+
+function scannerSessionClear(jobId) {
+    try {
+        const saved = scannerSessionGet();
+        if (!jobId || !saved || saved.jobId === jobId) {
+            sessionStorage.removeItem(ACTIVE_SCANNER_JOB_KEY);
+        }
+    } catch (e) { /* ignore */ }
+}
+
+async function fetchScannerJson(url, options = {}, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        let json;
+        if (response.status === 204) {
+            json = { success: true };
+        } else {
+            try {
+                json = await response.json();
+            } catch (e) {
+                const error = new Error(`服务器返回了无法解析的响应（HTTP ${response.status}）`);
+                error.response = response;
+                throw error;
+            }
+        }
+        return { response, json };
+    } catch (e) {
+        if (e && e.name === 'AbortError') {
+            throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+        }
+        throw e;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function scannerPhaseRange(phase) {
+    const text = String(phase || '');
+    if (/^已完成$/.test(text)) return [100, 100];
+    if (/排队|启动/.test(text)) return [0, 5];
+    if (/市场情绪|获取股票|获取.*池/.test(text)) return [3, 10];
+    if (/准备|批量更新|获取行情|初筛|筛选过滤|预筛选/.test(text)) return [10, 30];
+    if (/筛选|扫描|评分|分析/.test(text)) return [30, 99];
+    return [0, 99];
+}
+
+function scannerDisplayPercent(job) {
+    const status = String(job?.status || '');
+    if (status === 'completed') return 100;
+
+    const done = Number(job?.done || 0);
+    const total = Number(job?.total || 0);
+    const raw = Number(job?.percent ?? (total ? (done / total * 100) : 0));
+    const safeRaw = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
+    const [start, end] = scannerPhaseRange(job?.phase);
+    let weighted = total > 0
+        ? start + (end - start) * safeRaw / 100
+        : start;
+    weighted = Math.min(99, Math.max(0, weighted));
+
+    const key = job?.id || 'starting';
+    const previous = Number(scannerProgressState.get(key) || 0);
+    const displayed = Math.max(previous, weighted);
+    scannerProgressState.set(key, displayed);
+    return displayed;
+}
+
 function renderScannerJobProgress({ title, job, loadingText }) {
     const panel = document.getElementById('candidates-panel');
     const done = Number(job?.done || 0);
     const total = Number(job?.total || 0);
-    const percent = Number(job?.percent || (total ? (done / total * 100) : 0));
-    const safePercent = Math.max(0, Math.min(100, percent));
+    const safePercent = scannerDisplayPercent(job);
     const phase = job?.phase || '启动中';
     const message = job?.message || loadingText;
     const totalText = total ? `${done}/${total}` : '准备中';
     const matched = Number(job?.matched || 0);
     const errors = Number(job?.errors || 0);
     const elapsed = Number(job?.elapsed_sec || 0).toFixed(1);
+    const status = String(job?.status || 'running');
+    const canCancel = Boolean(job?.id)
+        && job?.cancel_supported === true
+        && !SCANNER_TERMINAL_STATUSES.has(status)
+        && status !== 'cancelling'
+        && !job?.cancel_requested
+        && !activeScannerRuntime?.cancelRequested;
+    const cancelHtml = canCancel
+        ? '<button type="button" class="itable-reset scanner-cancel-btn">停止扫描</button>'
+        : '';
 
     panel.innerHTML = `
         <div class="scanner-result-card scanner-progress-card">
             <div class="scanner-result-header">
                 <h2>${escapeHtml(title)}</h2>
-                <span class="scanner-meta">${escapeHtml(phase)}</span>
+                <span class="scanner-meta">${escapeHtml(phase)}</span>${cancelHtml}
             </div>
             <div class="scanner-progress-message">${escapeHtml(message)}</div>
-            <div class="scanner-progress-bar" aria-label="筛选进度">
+            <div class="scanner-progress-bar" role="progressbar" aria-label="筛选进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${safePercent.toFixed(1)}">
                 <div class="scanner-progress-fill" style="width: ${safePercent}%"></div>
             </div>
             <div class="scanner-progress-row">
@@ -73,23 +169,189 @@ function renderScannerJobProgress({ title, job, loadingText }) {
             </div>
         </div>
     `;
+    panel.querySelector('.scanner-cancel-btn')?.addEventListener('click', cancelActiveScannerJob);
 }
 
-async function runExternalScannerJob({
-    startUrl,
-    statusUrlBase,
-    btnId,
-    normalText,
-    busyText,
-    loadingText,
-    title,
-    columns,
-    emptyText,
-    getColumns,
-    renderResult,
-    pollInterval = 1200,
-}) {
+function scannerJobOptions(scannerKey) {
+    const statusUrlBase = '/api/scanners/jobs/';
+    if (scannerKey === 'wash_pattern') {
+        const sset = getScanSettings();
+        return {
+            scannerKey,
+            requestParams: { mode: 'both', pool: sset.pool, recent_days: sset.recent_days, workers: sset.workers },
+            startUrl: `/api/scanners/wash-pattern/start?mode=both&pool=${encodeURIComponent(sset.pool)}&recent_days=${encodeURIComponent(sset.recent_days)}&workers=${encodeURIComponent(sset.workers)}`,
+            statusUrlBase,
+            btnId: 'wash-scan-btn',
+            normalText: '洗盘形态扫描',
+            busyText: '洗盘扫描中...',
+            loadingText: '正在启动洗盘形态扫描...',
+            title: '洗盘形态扫描',
+            emptyText: '未发现符合条件的洗盘形态',
+            columns: WASH_PATTERN_COLUMNS,
+        };
+    }
+    if (scannerKey === 'breakout_base') {
+        const sset = getScanSettings();
+        return {
+            scannerKey,
+            requestParams: { mode: 'breakout_base', pool: sset.pool, recent_days: sset.recent_days, workers: sset.workers },
+            startUrl: `/api/scanners/wash-pattern/start?mode=breakout_base&pool=${encodeURIComponent(sset.pool)}&recent_days=${encodeURIComponent(sset.recent_days)}&workers=${encodeURIComponent(sset.workers)}`,
+            statusUrlBase,
+            btnId: 'breakout-scan-btn',
+            normalText: '突破前蓄势',
+            busyText: '蓄势扫描中...',
+            loadingText: '正在启动突破前蓄势扫描...',
+            title: '突破前蓄势（启动初期两阴一阳夹两阴）',
+            emptyText: '未发现符合条件的突破前蓄势形态',
+            columns: WASH_PATTERN_COLUMNS,
+        };
+    }
+    if (scannerKey === 'limit_down_rebound') {
+        const workers = getScanSettings().workers;
+        return {
+            scannerKey,
+            requestParams: { threads: workers },
+            startUrl: `/api/scanners/limit-down-rebound/start?threads=${encodeURIComponent(workers)}`,
+            statusUrlBase,
+            btnId: 'rebound-scan-btn',
+            normalText: 'A股条件筛选',
+            busyText: '条件筛选中...',
+            loadingText: '正在启动A股条件筛选...',
+            title: 'A股条件筛选',
+            emptyText: '未发现符合条件的候选股票',
+            columns: [],
+            getColumns: getLimitDownReboundColumns,
+        };
+    }
+    if (scannerKey === 'lowbuy_candidates') {
+        return {
+            scannerKey,
+            requestParams: { min_score: getScanSettings().min_score },
+            startUrl: `/api/lowbuy/candidates/start?min_score=${encodeURIComponent(getScanSettings().min_score)}`,
+            statusUrlBase,
+            btnId: 'scan-btn',
+            normalText: '全A低吸扫描',
+            busyText: '扫描中...',
+            loadingText: '正在启动全A低吸扫描...',
+            title: '全A低吸扫描',
+            emptyText: '未发现符合条件的低吸候选',
+            renderResult: (result) => renderCandidates(result.data || []),
+        };
+    }
+    if (scannerKey === 'hero_scan') {
+        return {
+            scannerKey,
+            requestParams: { min_gain: 3, max_turnover: 25, lookback: 10 },
+            startUrl: '/api/hero/scan/start',
+            statusUrlBase,
+            btnId: 'hero-scan-btn',
+            normalText: '🦸 逆势英雄',
+            busyText: '扫描中...',
+            loadingText: '正在扫描逆势英雄（暴跌日"该跌不跌"的强势股）...',
+            title: '逆势英雄扫描',
+            renderResult: (result) => {
+                if (result && result.success === false) {
+                    document.getElementById('candidates-panel').innerHTML =
+                        `<div class="error-msg">扫描失败: ${escapeHtml(result.error || '未知错误')}</div>`;
+                    return;
+                }
+                renderHeroes(result || {});
+            },
+        };
+    }
+    return null;
+}
+
+async function cancelActiveScannerJob() {
+    const runtime = activeScannerRuntime;
+    if (!runtime || !runtime.jobId || runtime.cancelRequested) return;
+
+    runtime.cancelRequested = true;
+    runtime.job = {
+        ...(runtime.job || {}),
+        id: runtime.jobId,
+        phase: '取消中',
+        message: '正在请求停止扫描；已开始的数据请求可能需要片刻才能结束...',
+    };
+    renderScannerJobProgress(runtime);
+
+    const encodedId = encodeURIComponent(runtime.jobId);
+    const postUrl = `${runtime.statusUrlBase}${encodedId}/cancel`;
+    const deleteUrl = `${runtime.statusUrlBase}${encodedId}`;
+    try {
+        let responseData = await fetchScannerJson(postUrl, { method: 'POST' }, 15000);
+        if ([404, 405].includes(responseData.response.status)) {
+            responseData = await fetchScannerJson(deleteUrl, { method: 'DELETE' }, 15000);
+        }
+        const { response, json } = responseData;
+        if (!response.ok || json.success === false) {
+            throw new Error(json.error || `取消请求失败（HTTP ${response.status}）`);
+        }
+        if (activeScannerRuntime !== runtime) return;
+        runtime.job = json.job || {
+            ...runtime.job,
+            status: 'cancelling',
+            phase: '取消中',
+            message: '已提交停止请求，正在等待当前步骤安全退出...',
+        };
+        renderScannerJobProgress(runtime);
+    } catch (e) {
+        if (activeScannerRuntime !== runtime) return;
+        runtime.cancelRequested = false;
+        runtime.job = {
+            ...runtime.job,
+            phase: runtime.job?.phase === '取消中' ? '扫描中' : runtime.job?.phase,
+            message: `停止扫描失败：${e.message}；原任务仍在运行`,
+        };
+        renderScannerJobProgress(runtime);
+    }
+}
+
+function restoreActiveScannerJob() {
+    if (isScanning) return true;
+    const saved = scannerSessionGet();
+    if (!saved?.jobId || !saved?.scannerKey) return false;
+    const options = scannerJobOptions(saved.scannerKey);
+    if (!options) {
+        scannerSessionClear(saved.jobId);
+        return false;
+    }
+    runExternalScannerJob({
+        ...options,
+        resumeJobId: saved.jobId,
+        resumeStartedAt: Number(saved.startedAt || Date.now()),
+    });
+    return true;
+}
+
+async function runExternalScannerJob(options) {
+    const {
+        scannerKey,
+        startUrl,
+        statusUrlBase,
+        btnId,
+        normalText,
+        busyText,
+        loadingText,
+        title,
+        columns,
+        emptyText,
+        getColumns,
+        renderResult,
+        resumeJobId,
+        resumeStartedAt,
+        requestParams,
+        pollInterval = 1200,
+        maxPollInterval = 10000,
+        maxStatusFailures = 6,
+        maxPollDuration = 60 * 60 * 1000,
+    } = options;
+
     if (isScanning) return;
+    if (!resumeJobId && scannerSessionGet()?.jobId) {
+        restoreActiveScannerJob();
+        return;
+    }
     isScanning = true;
 
     setScanButtonsBusy(true, btnId, busyText, normalText);
@@ -99,31 +361,139 @@ async function runExternalScannerJob({
         job: { phase: '启动中', message: loadingText, percent: 0 },
     });
 
+    let jobId = resumeJobId || '';
+    let activePersisted = Boolean(jobId);
+    const taskStartedAt = Number(resumeStartedAt || Date.now());
+    const connectionStartedAt = Date.now();
     try {
-        const startResp = await fetch(startUrl, { method: 'POST' });
-        const startJson = await startResp.json();
-        if (!startResp.ok || !startJson.success) {
-            throw new Error(startJson.error || '启动筛选任务失败');
+        let job;
+        if (resumeJobId) {
+            job = {
+                id: resumeJobId,
+                status: 'running',
+                phase: '重新连接',
+                message: '正在恢复上次未完成的扫描任务...',
+            };
+        } else {
+            const { response: startResp, json: startJson } = await fetchScannerJson(
+                startUrl,
+                { method: 'POST' },
+                30000,
+            );
+            const existingJob = startJson.job || (startJson.job_id ? { id: startJson.job_id } : null);
+            if ((!startResp.ok || !startJson.success) && !(startResp.status === 409 && existingJob?.id)) {
+                throw new Error(startJson.error || '启动筛选任务失败');
+            }
+            if (
+                startResp.status === 409
+                && existingJob?.kind
+                && existingJob.kind !== scannerKey
+            ) {
+                throw new Error('另一种扫描任务正在运行，请等待其结束后再启动');
+            }
+            if (startResp.status === 409 && existingJob?.params && requestParams) {
+                const differs = Object.entries(requestParams).some(([key, value]) => (
+                    String(existingJob.params[key] ?? '') !== String(value ?? '')
+                ));
+                if (differs) {
+                    throw new Error('同类扫描正以其他参数运行，请等待其结束后再启动');
+                }
+            }
+            job = {
+                phase: '启动中',
+                message: startResp.status === 409 ? '检测到正在运行的同类任务，正在接管进度...' : loadingText,
+                ...existingJob,
+            };
+            jobId = job.id;
         }
 
-        let job = startJson.job || { id: startJson.job_id, phase: '启动中', message: loadingText };
+        if (!jobId) throw new Error('服务器未返回任务编号');
+        scannerProgressState.delete('starting');
+        scannerSessionSet({ scannerKey, jobId, startedAt: taskStartedAt });
+        activePersisted = true;
+        activeScannerRuntime = {
+            title,
+            loadingText,
+            statusUrlBase,
+            jobId,
+            job,
+            cancelRequested: false,
+        };
         renderScannerJobProgress({ title, loadingText, job });
 
-        while (job.status !== 'completed' && job.status !== 'failed') {
-            await sleep(pollInterval);
-            const statusResp = await fetch(`${statusUrlBase}${encodeURIComponent(job.id)}`);
-            const statusJson = await statusResp.json();
-            if (!statusResp.ok || !statusJson.success) {
-                throw new Error(statusJson.error || '读取筛选进度失败');
+        let consecutiveFailures = 0;
+        let nextDelay = resumeJobId ? 0 : pollInterval;
+        while (!SCANNER_TERMINAL_STATUSES.has(String(job.status || ''))) {
+            if (Date.now() - connectionStartedAt > maxPollDuration) {
+                throw new Error(`进度轮询已超过 ${Math.round(maxPollDuration / 60000)} 分钟，已暂停连接`);
             }
-            job = statusJson.job;
-            renderScannerJobProgress({ title, loadingText, job });
+            if (nextDelay > 0) await sleep(nextDelay);
+            try {
+                const { response: statusResp, json: statusJson } = await fetchScannerJson(
+                    `${statusUrlBase}${encodeURIComponent(jobId)}`,
+                    {},
+                    15000,
+                );
+                if (statusResp.status === 404) {
+                    const error = new Error(statusJson.error || '扫描任务不存在或已过期');
+                    error.clearActiveJob = true;
+                    throw error;
+                }
+                if (!statusResp.ok || !statusJson.success) {
+                    const error = new Error(statusJson.error || `读取筛选进度失败（HTTP ${statusResp.status}）`);
+                    error.nonRetryable = statusResp.status >= 400
+                        && statusResp.status < 500
+                        && ![408, 425, 429].includes(statusResp.status);
+                    throw error;
+                }
+                job = statusJson.job || job;
+                if (job?.kind && job.kind !== scannerKey) {
+                    const error = new Error('保存的任务类型与当前页面不一致，已停止接管');
+                    error.clearActiveJob = true;
+                    throw error;
+                }
+                consecutiveFailures = 0;
+                nextDelay = pollInterval;
+                if (activeScannerRuntime?.jobId === jobId) activeScannerRuntime.job = job;
+                renderScannerJobProgress({ title, loadingText, job });
+            } catch (e) {
+                if (e.clearActiveJob || e.nonRetryable) throw e;
+                consecutiveFailures += 1;
+                if (consecutiveFailures >= maxStatusFailures) {
+                    throw new Error(`连续 ${maxStatusFailures} 次无法读取进度：${e.message}`);
+                }
+                nextDelay = Math.min(maxPollInterval, pollInterval * (2 ** (consecutiveFailures - 1)));
+                const retryJob = {
+                    ...job,
+                    id: jobId,
+                    phase: '连接重试',
+                    message: `读取进度失败，${(nextDelay / 1000).toFixed(1)} 秒后重试（${consecutiveFailures}/${maxStatusFailures}）：${e.message}`,
+                };
+                if (activeScannerRuntime?.jobId === jobId) activeScannerRuntime.job = retryJob;
+                renderScannerJobProgress({ title, loadingText, job: retryJob });
+            }
         }
 
         if (job.status === 'failed') {
+            scannerSessionClear(jobId);
+            activePersisted = false;
             throw new Error(job.error || job.message || '筛选任务失败');
         }
+        if (job.status === 'cancelled' || job.status === 'canceled') {
+            scannerSessionClear(jobId);
+            activePersisted = false;
+            scannerProgressState.delete(jobId);
+            document.getElementById('candidates-panel').innerHTML = `
+                <div class="scanner-result-card">
+                    <div class="scanner-result-header"><h2>${escapeHtml(title)}</h2></div>
+                    <div class="empty-msg">扫描已停止${job.message ? `：${escapeHtml(job.message)}` : ''}</div>
+                </div>`;
+            return;
+        }
 
+        scannerSessionClear(jobId);
+        activePersisted = false;
+        scannerProgressState.delete(jobId);
         const result = job.result || {};
         if (typeof renderResult === 'function') {
             renderResult(result);
@@ -142,8 +512,18 @@ async function runExternalScannerJob({
             emptyText,
         });
     } catch (e) {
-        document.getElementById('candidates-panel').innerHTML = `<div class="error-msg">扫描失败: ${escapeHtml(e.message)}</div>`;
+        if (e.clearActiveJob) {
+            scannerSessionClear(jobId);
+            activePersisted = false;
+        }
+        const recoveryHtml = activePersisted
+            ? '<div style="margin-top:10px;color:var(--text-secondary)">任务可能仍在后台运行，可刷新页面或点击下方按钮重新连接。</div><button type="button" class="itable-reset scanner-reconnect-btn" style="margin-top:10px">重新连接</button>'
+            : '';
+        const panel = document.getElementById('candidates-panel');
+        panel.innerHTML = `<div class="error-msg">扫描失败: ${escapeHtml(e.message)}${recoveryHtml}</div>`;
+        panel.querySelector('.scanner-reconnect-btn')?.addEventListener('click', restoreActiveScannerJob);
     } finally {
+        if (activeScannerRuntime?.jobId === jobId) activeScannerRuntime = null;
         isScanning = false;
         setScanButtonsBusy(false, btnId, busyText, normalText);
     }
@@ -156,6 +536,7 @@ const WASH_PATTERN_COLUMNS = [
     { key: '状态', label: '状态' },
     { key: '扫描模式', label: '模式' },
     { key: '洗盘结束日', label: '结束日' },
+    { key: '最新行情日', label: '数据日' },
     { key: '距今(天)', label: '距今' },
     { key: '模式', label: '形态' },
     { key: '后续涨幅%', label: '后续%' },
@@ -165,46 +546,15 @@ const WASH_PATTERN_COLUMNS = [
 ];
 
 function scanWashPatterns() {
-    runExternalScannerJob({
-        startUrl: (() => { const sset = getScanSettings(); return `/api/scanners/wash-pattern/start?mode=both&pool=${sset.pool}&recent_days=${sset.recent_days}&workers=${sset.workers}`; })(),
-        statusUrlBase: '/api/scanners/jobs/',
-        btnId: 'wash-scan-btn',
-        normalText: '洗盘形态扫描',
-        busyText: '洗盘扫描中...',
-        loadingText: '正在启动洗盘形态扫描...',
-        title: '洗盘形态扫描',
-        emptyText: '未发现符合条件的洗盘形态',
-        columns: WASH_PATTERN_COLUMNS,
-    });
+    runExternalScannerJob(scannerJobOptions('wash_pattern'));
 }
 
 function scanBreakoutBase() {
-    runExternalScannerJob({
-        startUrl: (() => { const sset = getScanSettings(); return `/api/scanners/wash-pattern/start?mode=breakout_base&pool=${sset.pool}&recent_days=${sset.recent_days}&workers=${sset.workers}`; })(),
-        statusUrlBase: '/api/scanners/jobs/',
-        btnId: 'breakout-scan-btn',
-        normalText: '突破前蓄势',
-        busyText: '蓄势扫描中...',
-        loadingText: '正在启动突破前蓄势扫描...',
-        title: '突破前蓄势（启动初期两阴一阳夹两阴）',
-        emptyText: '未发现符合条件的突破前蓄势形态',
-        columns: WASH_PATTERN_COLUMNS,
-    });
+    runExternalScannerJob(scannerJobOptions('breakout_base'));
 }
 
 function scanLimitDownRebound() {
-    runExternalScannerJob({
-        startUrl: `/api/scanners/limit-down-rebound/start?threads=${getScanSettings().workers}`,
-        statusUrlBase: '/api/scanners/jobs/',
-        btnId: 'rebound-scan-btn',
-        normalText: 'A股条件筛选',
-        busyText: '条件筛选中...',
-        loadingText: '正在启动A股条件筛选...',
-        title: 'A股条件筛选',
-        emptyText: '未发现符合条件的候选股票',
-        columns: [],
-        getColumns: getLimitDownReboundColumns,
-    });
+    runExternalScannerJob(scannerJobOptions('limit_down_rebound'));
 }
 
 function getScannerRowCode(row) {
@@ -224,6 +574,8 @@ function getLimitDownReboundColumns(response) {
     const meta = response.meta || {};
     const rows = Array.isArray(response.data) ? response.data : [];
     const firstRow = rows.length ? rows[0] : {};
+    const recentDays = Number(meta.recent_days || 20);
+    const recentKey = `近${Number.isFinite(recentDays) ? recentDays : 20}日涨幅%`;
     const isLocalScreener = meta.schema === 'local_stock_screener'
         || (Object.prototype.hasOwnProperty.call(firstRow, '代码')
             && Object.prototype.hasOwnProperty.call(firstRow, '综合评分'));
@@ -234,10 +586,12 @@ function getLimitDownReboundColumns(response) {
             { key: '名称', fallbackKeys: ['股票名称'], label: '名称' },
             { key: '现价', fallbackKeys: ['最新收盘价'], label: '现价' },
             { key: '今日涨幅%', fallbackKeys: ['最新涨跌幅(%)'], label: '今日幅%' },
-            { key: '近20日涨幅%', label: '近20日幅%' },
+            { key: recentKey, fallbackKeys: ['近20日涨幅%'], label: `近${Number.isFinite(recentDays) ? recentDays : 20}日幅%` },
             { key: '量比', label: '量比' },
             { key: '近期金叉', label: '金叉' },
             { key: '综合评分', fallbackKeys: ['策略组'], label: '评分' },
+            { key: '数据日期', fallbackKeys: ['最新日期'], label: '数据日' },
+            { key: '数据源', label: '数据源' },
             { key: 'MA20', label: 'MA20' },
             { key: 'MACD', label: 'MACD' },
         ];
@@ -526,4 +880,3 @@ function setupScanSettings() {
         });
     });
 }
-

@@ -22,6 +22,7 @@ Data source:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -31,7 +32,7 @@ import warnings
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -66,6 +67,21 @@ def brief_error(exc: Exception) -> str:
     if len(message) > 180:
         message = message[:177] + "..."
     return f"{exc.__class__.__name__}: {message}"
+
+
+class DailyDataSourceError(RuntimeError):
+    """No trustworthy daily history was available for one stock.
+
+    A normal strategy miss continues to return an empty result.  This typed
+    exception is reserved for data coverage failures so Web/CLI callers can
+    count them separately instead of reporting a misleading zero-match scan.
+    """
+
+    def __init__(self, code: str, errors: Iterable[str]):
+        self.code = normalize_stock_code(code)
+        self.source_errors = tuple(str(item) for item in errors if item)
+        detail = "; ".join(self.source_errors) or "all sources returned no usable history"
+        super().__init__(f"{self.code} daily history unavailable: {detail}")
 
 
 DEFAULT_OUTPUT = str(Path(__file__).resolve().with_name("wash_pattern_results.csv"))
@@ -111,7 +127,10 @@ class ScanConfig:
     fetch_days: int = 120
     recent_days: int = 30
     adjust: str = "qfq"
-    data_source: str = "yahoo"
+    data_source: str = "auto"
+    # 在线行情不可用时，只允许使用最近若干天内的完整历史缓存。
+    # 10 天可覆盖周末和 A 股长假，同时避免数周前的数据冒充实时扫描。
+    cache_max_stale_days: int = 10
     output: str = DEFAULT_OUTPUT
     workers: int = DEFAULT_WORKERS
     show_errors: bool = False
@@ -134,6 +153,10 @@ class ScanConfig:
     impulse_lookback: int = 10
     # 输出最新K线上的半完成形态：A=阴阴阳阴，B=阴阴阳阳阴
     include_candidate_warnings: bool = True
+    # The legacy Eastmoney spot prefilter is intentionally lossy (price,
+    # turnover, amount and board exclusions).  It must be an explicit opt-in;
+    # a full-A scan is complete by default.
+    enable_lossy_prescreen: bool = False
     # 低位反转洗盘：独立于强趋势过滤，默认只要求近期涨幅未进入强趋势区间
     low_reversal_max_rise_pct: float = 15.0
     low_reversal_require_no_step_down: bool = False
@@ -187,6 +210,7 @@ RESULT_COLUMNS = [
     "备注",
     "结束收盘",
     "当前价",
+    "最新行情日",
     "后续涨幅%",
     "趋势涨幅%",
     "洗盘回撤%",
@@ -1483,12 +1507,20 @@ def stock_pool_cache_files(source: str, pool_name: str) -> list[Path]:
     ]
 
 
-def read_stock_pool_cache(source: str, pool_name: str, max_age_days: int = 30) -> list[StockInfo]:
+def read_stock_pool_cache(
+    source: str,
+    pool_name: str,
+    max_age_days: int = 30,
+    require_today: bool = True,
+) -> list[StockInfo]:
     for path in stock_pool_cache_files(source, pool_name):
         if not path.exists():
             continue
-        age_seconds = time.time() - path.stat().st_mtime
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime)
+        age_seconds = time.time() - modified_at.timestamp()
         if age_seconds > max_age_days * 86400:
+            continue
+        if require_today and modified_at.date() != current_local_datetime().date():
             continue
         df = pd.read_csv(path, dtype={"code": str, "name": str})
         if "code" not in df.columns:
@@ -1515,11 +1547,20 @@ def write_stock_pool_cache(source: str, pool_name: str, stocks: list[StockInfo])
         [{"code": stock.code, "name": stock.name} for stock in stocks]
     )
     for path in stock_pool_cache_files(source, pool_name):
+        temp_path = path.with_name(
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            frame.to_csv(path, index=False, encoding="utf-8-sig")
+            frame.to_csv(temp_path, index=False, encoding="utf-8-sig")
+            os.replace(temp_path, path)
         except Exception:
             continue
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def sina_symbol_batches() -> Iterable[list[str]]:
@@ -1567,6 +1608,9 @@ def stock_pool_from_sina_quote(pool_name: str) -> list[StockInfo]:
     cached = read_stock_pool_cache("sina_quote", pool_name)
     if cached:
         return cached
+    stale_cache = read_stock_pool_cache(
+        "sina_quote", pool_name, max_age_days=30, require_today=False
+    )
 
     session = get_http_session()
     headers = {"Referer": "http://finance.sina.com.cn"}
@@ -1585,6 +1629,12 @@ def stock_pool_from_sina_quote(pool_name: str) -> list[StockInfo]:
                 last_error = exc
                 time.sleep(0.5 + attempt)
         else:
+            if stale_cache:
+                progress_write(
+                    "新浪股票池刷新失败，已回退最近一次本地股票池："
+                    f"{len(stale_cache)} 只。错误：{brief_error(last_error)}"
+                )
+                return stale_cache
             raise last_error or RuntimeError("新浪批量行情接口拉取失败")
 
         for symbol, data in re.findall(r'var hq_str_([^=]+)="([^"]*)";', response.text):
@@ -1600,6 +1650,11 @@ def stock_pool_from_sina_quote(pool_name: str) -> list[StockInfo]:
     for stock in stocks:
         deduped.setdefault(stock.code, stock)
     result = list(deduped.values())
+    if not result and stale_cache:
+        progress_write(
+            f"新浪股票池返回空列表，已回退最近一次本地股票池：{len(stale_cache)} 只"
+        )
+        return stale_cache
     write_stock_pool_cache("sina_quote", pool_name, result)
     return result
 
@@ -1679,7 +1734,10 @@ def get_stock_pool(pool_name: str, pool_source: str = "auto") -> list[StockInfo]
     raise RuntimeError(f"获取股票池失败：{'; '.join(errors)}")
 
 
-def normalize_daily_columns(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_daily_columns(
+    df: pd.DataFrame,
+    volume_multiplier: float = 1.0,
+) -> pd.DataFrame:
     columns = {
         "日期": "date",
         "开盘": "open",
@@ -1698,6 +1756,7 @@ def normalize_daily_columns(df: pd.DataFrame) -> pd.DataFrame:
     normalized["date"] = pd.to_datetime(normalized["date"])
     for column in ("open", "close", "high", "low", "volume"):
         normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized["volume"] = normalized["volume"] * float(volume_multiplier)
 
     normalized = normalized.dropna(subset=required)
     normalized = normalized.sort_values("date").reset_index(drop=True)
@@ -1713,6 +1772,35 @@ def fetch_daily_akshare(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
     raw = ak.stock_zh_a_hist(
         symbol=code,
         period="daily",
+        start_date=start_date,
+        end_date=end_date,
+        adjust=cfg.adjust,
+    )
+    if raw is None or raw.empty:
+        return None
+    # Eastmoney reports 成交量 in lots (手); the shared cache contract is shares.
+    return normalize_daily_columns(raw, volume_multiplier=100.0)
+
+
+def sina_daily_symbol(code: str) -> str:
+    """Format an A-share code for AKShare's Sina history endpoint."""
+    code = normalize_stock_code(code)
+    if code.startswith(("4", "8", "9")):
+        return f"bj{code}"
+    if code.startswith(("5", "6")):
+        return f"sh{code}"
+    return f"sz{code}"
+
+
+def fetch_daily_sina(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
+    """Fetch daily history from Sina, independently of Eastmoney/Yahoo."""
+    as_of = parse_as_of_date(cfg)
+    end_date = as_of.strftime("%Y%m%d")
+    start_date = (as_of - timedelta(days=cfg.fetch_days + 80)).strftime(
+        "%Y%m%d"
+    )
+    raw = ak.stock_zh_a_daily(
+        symbol=sina_daily_symbol(code),
         start_date=start_date,
         end_date=end_date,
         adjust=cfg.adjust,
@@ -1818,9 +1906,282 @@ def wash_ohlcv_cache_dir() -> Path:
     return d
 
 
-# 同一 as_of 日期下，缓存在该 TTL 内视为有效（秒）。
-# 4 小时意味着早盘扫一次、午后再扫一次会各自刷新，但同一时段的重复扫描走缓存。
+# Same-session history is stable after the close, but an intraday daily bar is
+# still moving.  Keep the old four-hour reuse window only outside market hours
+# and refresh a live bar every five minutes while the market is open.
 WASH_OHLCV_TTL_SEC = 4 * 60 * 60
+WASH_OHLCV_INTRADAY_TTL_SEC = 5 * 60
+MARKET_DATA_OPEN_MINUTE = 9 * 60 + 15
+MARKET_CLOSE_MINUTE = 15 * 60
+SINA_QUOTE_BATCH_SIZE = 500
+SINA_QUOTE_BATCH_WORKERS = 4
+_VALIDATED_WASH_CACHE: dict[tuple[str, str, str], float] = {}
+_VALIDATED_WASH_CACHE_LOCK = threading.Lock()
+_TRADE_CALENDAR_DATES: list[date] = []
+_TRADE_CALENDAR_LOCK = threading.Lock()
+
+
+def _minute_of_day(value: datetime) -> int:
+    return value.hour * 60 + value.minute
+
+
+def current_local_datetime() -> datetime:
+    """Single clock hook used by cache freshness checks and deterministic tests."""
+    return datetime.now()
+
+
+def is_a_share_intraday(value: datetime) -> bool:
+    """Whether a current-date cache contains a still-changing daily bar."""
+    minute = _minute_of_day(value)
+    return (
+        value.weekday() < 5
+        and MARKET_DATA_OPEN_MINUTE <= minute < MARKET_CLOSE_MINUTE
+    )
+
+
+def wash_cache_ttl_seconds(cfg: ScanConfig, now: datetime | None = None) -> int:
+    """Return a dynamic cache TTL for historical, intraday and closed bars."""
+    current = now or current_local_datetime()
+    if not cfg.as_of_date and is_a_share_intraday(current):
+        return WASH_OHLCV_INTRADAY_TTL_SEC
+    return WASH_OHLCV_TTL_SEC
+
+
+def wash_cache_payload_is_fresh(
+    payload: dict[str, object],
+    cfg: ScanConfig,
+    now: datetime | None = None,
+    code: str | None = None,
+) -> bool:
+    """Validate wall-clock freshness without reusing a pre-close bar at close."""
+    current = now or current_local_datetime()
+    saved_candidates = [payload.get("saved_at", 0)]
+    if code:
+        key = (
+            normalize_stock_code(code),
+            cfg.adjust,
+            parse_as_of_date(cfg).strftime("%Y-%m-%d"),
+        )
+        with _VALIDATED_WASH_CACHE_LOCK:
+            validated_at = _VALIDATED_WASH_CACHE.get(key)
+        if validated_at:
+            saved_candidates.insert(0, validated_at)
+
+    for raw_saved_at in saved_candidates:
+        try:
+            saved_at = float(raw_saved_at)
+            saved = datetime.fromtimestamp(saved_at)
+        except (TypeError, ValueError, OSError):
+            continue
+
+        age_seconds = current.timestamp() - saved_at
+        if age_seconds < -60 or age_seconds > wash_cache_ttl_seconds(cfg, current):
+            continue
+
+        # A bar cached/validated before 15:00 is provisional.  Once the market
+        # has closed it must be refreshed even inside the after-close TTL.
+        if (
+            not cfg.as_of_date
+            and current.weekday() < 5
+            and current.date() == saved.date()
+            and _minute_of_day(current) >= MARKET_CLOSE_MINUTE
+            and _minute_of_day(saved) < MARKET_CLOSE_MINUTE
+        ):
+            continue
+        return True
+    return False
+
+
+def mark_wash_cache_validated(
+    code: str,
+    cfg: ScanConfig,
+    now: datetime | None = None,
+) -> None:
+    """Remember that a live quote just confirmed an unchanged cached bar."""
+    current = now or current_local_datetime()
+    key = (
+        normalize_stock_code(code),
+        cfg.adjust,
+        parse_as_of_date(cfg).strftime("%Y-%m-%d"),
+    )
+    with _VALIDATED_WASH_CACHE_LOCK:
+        _VALIDATED_WASH_CACHE[key] = current.timestamp()
+        if len(_VALIDATED_WASH_CACHE) > 12000:
+            cutoff = current.timestamp() - WASH_OHLCV_TTL_SEC * 2
+            stale_keys = [
+                item
+                for item, timestamp in _VALIDATED_WASH_CACHE.items()
+                if timestamp < cutoff
+            ]
+            for item in stale_keys:
+                _VALIDATED_WASH_CACHE.pop(item, None)
+
+
+def wash_cache_validation_is_fresh(
+    code: str,
+    cfg: ScanConfig,
+    now: datetime | None = None,
+) -> bool:
+    """Whether a current live quote has validated this code without a rewrite."""
+    current = now or current_local_datetime()
+    key = (
+        normalize_stock_code(code),
+        cfg.adjust,
+        parse_as_of_date(cfg).strftime("%Y-%m-%d"),
+    )
+    with _VALIDATED_WASH_CACHE_LOCK:
+        validated_at = _VALIDATED_WASH_CACHE.get(key)
+    if not validated_at:
+        return False
+    return wash_cache_payload_is_fresh(
+        {
+            "saved_at": validated_at,
+            "as_of": parse_as_of_date(cfg).strftime("%Y-%m-%d"),
+        },
+        cfg,
+        now=current,
+    )
+
+
+def minimum_history_rows(cfg: ScanConfig) -> int:
+    return max(70, cfg.trend_rise_days + 10)
+
+
+def history_data_issue(df: pd.DataFrame | None, cfg: ScanConfig) -> str:
+    """Return why a history frame is unsafe for scanning, or an empty string."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return "empty"
+    min_rows = minimum_history_rows(cfg)
+    if len(df) < min_rows:
+        return f"only {len(df)} rows (need {min_rows})"
+    if "date" not in df.columns:
+        return "missing date column"
+    dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if dates.empty:
+        return "invalid date column"
+    age_days = (parse_as_of_date(cfg).date() - dates.max().date()).days
+    if age_days < 0:
+        return f"latest row is {abs(age_days)} days after as-of date"
+    if age_days > cfg.cache_max_stale_days:
+        return (
+            f"latest row is {age_days} days old "
+            f"(max {cfg.cache_max_stale_days})"
+        )
+    return ""
+
+
+def wash_cache_frame_in_shares(payload: dict[str, object]) -> pd.DataFrame | None:
+    """Return a cached frame under the canonical volume=shares contract."""
+    df = payload.get("data")
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+
+    unit = str(payload.get("volume_unit") or "").lower()
+    source = str(payload.get("source") or "").lower()
+    if unit == "shares":
+        return df
+    eastmoney_marker_columns = [
+        column
+        for column in ("成交额", "换手率", "振幅", "涨跌额")
+        if column in df.columns
+    ]
+    if eastmoney_marker_columns:
+        # Old mixed payloads can contain Eastmoney rows in lots followed by a
+        # Sina batch row in shares.  Marker columns are populated only on the
+        # Eastmoney rows, so convert those rows rather than the entire frame.
+        lots_mask = df[eastmoney_marker_columns].notna().any(axis=1)
+        if lots_mask.any():
+            converted = df.copy()
+            converted.loc[lots_mask, "volume"] = pd.to_numeric(
+                converted.loc[lots_mask, "volume"], errors="coerce"
+            ) * 100.0
+            return converted
+    if unit in {"lots", "hands"} or source in {"akshare", "eastmoney"}:
+        converted = df.copy()
+        converted["volume"] = pd.to_numeric(
+            converted.get("volume"), errors="coerce"
+        ) * 100.0
+        return converted
+    if source in {"sina", "sina_batch", "yahoo"}:
+        # Compatibility for caches created before volume_unit was persisted.
+        # These providers already report shares.
+        return df
+    # Unknown legacy payloads are intentionally rejected instead of silently
+    # mixing lots and shares in volume-ratio pattern rules.
+    return None
+
+
+def persist_volume_unit_migration(
+    path: Path,
+    payload: dict[str, object],
+    df: pd.DataFrame,
+) -> None:
+    """Atomically upgrade a safely identifiable legacy payload in place."""
+    if payload.get("volume_unit") or not isinstance(df, pd.DataFrame):
+        return
+    source = str(payload.get("source") or "").lower()
+    has_eastmoney_markers = any(
+        column in df.columns
+        for column in ("成交额", "换手率", "振幅", "涨跌额")
+    )
+    if source not in {"sina", "sina_batch", "yahoo", "akshare", "eastmoney"} \
+            and not has_eastmoney_markers:
+        return
+    temp_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.volume.tmp"
+    )
+    try:
+        migrated = dict(payload)
+        migrated["data"] = df
+        migrated["volume_unit"] = "shares"
+        pd.to_pickle(migrated, temp_path)
+        os.replace(temp_path, path)
+    except Exception:
+        pass
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def completed_history_view(
+    df: pd.DataFrame,
+    cfg: ScanConfig,
+    now: datetime | None = None,
+) -> pd.DataFrame:
+    """Exclude today's still-changing daily bar from end-of-day strategies."""
+    if cfg.as_of_date or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    current = now or current_local_datetime()
+    if not is_a_share_intraday(current) or "date" not in df.columns:
+        return df
+    dates = pd.to_datetime(df["date"], errors="coerce")
+    if dates.dropna().empty or dates.max().date() != current.date():
+        return df
+    completed = df.loc[dates.dt.date < current.date()].copy()
+    completed.attrs.update(df.attrs)
+    completed.attrs["provisional_bar_excluded"] = True
+    return completed.reset_index(drop=True)
+
+
+def tag_wash_history(
+    df: pd.DataFrame,
+    source: str,
+    stale_fallback: bool = False,
+    cache_saved_at: float | None = None,
+) -> pd.DataFrame:
+    tagged = df.copy(deep=False)
+    tagged.attrs["data_source"] = str(source or "unknown")
+    tagged.attrs["stale_fallback"] = bool(stale_fallback)
+    dates = pd.to_datetime(tagged.get("date"), errors="coerce").dropna()
+    tagged.attrs["latest_data_date"] = (
+        dates.max().date().isoformat() if not dates.empty else ""
+    )
+    tagged.attrs["volume_unit"] = "shares"
+    if cache_saved_at is not None:
+        tagged.attrs["cache_saved_at"] = float(cache_saved_at)
+    return tagged
 
 
 def load_wash_ohlcv_cache(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
@@ -1838,36 +2199,418 @@ def load_wash_ohlcv_cache(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
             return None
 
         as_of = parse_as_of_date(cfg).strftime("%Y-%m-%d")
-        if payload.get("as_of") != as_of:
+        validated_now = wash_cache_validation_is_fresh(code, cfg)
+        if payload.get("as_of") != as_of and not validated_now:
             return None
         if payload.get("adjust") != cfg.adjust:
             return None
-        if time.time() - float(payload.get("saved_at", 0)) > WASH_OHLCV_TTL_SEC:
+        if not wash_cache_payload_is_fresh(payload, cfg, code=code):
             return None
 
-        df = payload.get("data")
-        if not isinstance(df, pd.DataFrame) or df.empty:
+        df = wash_cache_frame_in_shares(payload)
+        if df is not None:
+            persist_volume_unit_migration(path, payload, df)
+        df = completed_history_view(df, cfg) if df is not None else None
+        if history_data_issue(df, cfg):
             return None
-        return df
+        return tag_wash_history(
+            df,
+            str(payload.get("source") or "shared_cache"),
+            cache_saved_at=float(payload.get("saved_at") or 0),
+        )
     except Exception:
         return None
 
 
-def save_wash_ohlcv_cache(code: str, cfg: ScanConfig, df: pd.DataFrame) -> None:
-    """将网络获取的 OHLCV 写回持久缓存，供当天后续扫描复用。"""
+def load_recent_wash_ohlcv_cache(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
+    """Use a recent complete persistent cache only after live sources fail."""
     try:
         path = wash_ohlcv_cache_dir() / f"{code}.pkl"
+        if not path.exists():
+            return None
+        payload = pd.read_pickle(path)
+        if not isinstance(payload, dict) or payload.get("adjust") != cfg.adjust:
+            return None
+        df = wash_cache_frame_in_shares(payload)
+        if df is not None:
+            persist_volume_unit_migration(path, payload, df)
+        df = completed_history_view(df, cfg) if df is not None else None
+        if history_data_issue(df, cfg):
+            return None
+        return tag_wash_history(
+            df,
+            str(payload.get("source") or "shared_cache"),
+            stale_fallback=True,
+            cache_saved_at=float(payload.get("saved_at") or 0),
+        )
+    except Exception:
+        return None
+
+
+def save_wash_ohlcv_cache(
+    code: str,
+    cfg: ScanConfig,
+    df: pd.DataFrame,
+    source: str = "",
+) -> None:
+    """Atomically persist OHLCV so concurrent scans never read a half-write."""
+    temp_path: Path | None = None
+    try:
+        path = wash_ohlcv_cache_dir() / f"{code}.pkl"
+        dates = pd.to_datetime(df.get("date"), errors="coerce").dropna()
+        latest_bar_date = dates.max().date().isoformat() if not dates.empty else ""
         payload = {
             "code": code,
             "as_of": parse_as_of_date(cfg).strftime("%Y-%m-%d"),
             "adjust": cfg.adjust,
             "saved_at": time.time(),
+            "source": source,
+            "volume_unit": "shares",
+            "latest_bar_date": latest_bar_date,
             "data": df,
         }
-        pd.to_pickle(payload, path)
+        temp_path = path.with_name(
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        pd.to_pickle(payload, temp_path)
+        os.replace(temp_path, path)
     except Exception:
         # 缓存写入失败不应影响扫描主流程
         pass
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _fetch_sina_quote_batch(
+    stocks: list[StockInfo],
+    cfg: ScanConfig,
+) -> dict[str, dict[str, object]]:
+    symbols = [sina_daily_symbol(stock.code) for stock in stocks]
+    url = "http://hq.sinajs.cn/list=" + ",".join(symbols)
+    headers = {"Referer": "http://finance.sina.com.cn"}
+    response = get_http_session().get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    response.encoding = "gbk"
+    as_of = parse_as_of_date(cfg).date()
+    quotes: dict[str, dict[str, object]] = {}
+
+    for symbol, payload in re.findall(
+        r'var hq_str_([^=]+)="([^"]*)";', response.text
+    ):
+        parts = payload.split(",")
+        if len(parts) < 33 or not parts[0] or parts[32] == "-3":
+            continue
+        try:
+            quote_date = datetime.strptime(parts[30], "%Y-%m-%d").date()
+            open_price = float(parts[1])
+            previous_close = float(parts[2])
+            close = float(parts[3])
+            high = float(parts[4])
+            low = float(parts[5])
+            volume = float(parts[8])
+        except (TypeError, ValueError):
+            continue
+        if quote_date > as_of:
+            continue
+        if min(open_price, previous_close, close, high, low) <= 0 or volume <= 0:
+            continue
+        code = normalize_stock_code(symbol[2:])
+        quotes[code] = {
+            "date": quote_date,
+            "open": open_price,
+            "close": close,
+            "high": high,
+            "low": low,
+            "volume": volume,
+            "previous_close": previous_close,
+        }
+    return quotes
+
+
+def fetch_sina_quote_snapshot(
+    stocks: list[StockInfo],
+    cfg: ScanConfig,
+    diagnostics: dict[str, object] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Fetch the whole scan universe in a handful of Sina batch requests."""
+    batches = [
+        stocks[index:index + SINA_QUOTE_BATCH_SIZE]
+        for index in range(0, len(stocks), SINA_QUOTE_BATCH_SIZE)
+    ]
+    if not batches:
+        if diagnostics is not None:
+            diagnostics.update({"quote_batches": 0, "quote_batch_errors": 0})
+        return {}
+
+    quotes: dict[str, dict[str, object]] = {}
+    batch_errors: list[str] = []
+    max_workers = min(SINA_QUOTE_BATCH_WORKERS, len(batches))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_fetch_sina_quote_batch, batch, cfg)
+            for batch in batches
+        ]
+        for future in as_completed(futures):
+            try:
+                quotes.update(future.result())
+            except Exception as exc:
+                batch_errors.append(brief_error(exc))
+    if diagnostics is not None:
+        diagnostics.update({
+            "quote_batches": len(batches),
+            "quote_batch_errors": len(batch_errors),
+            "quote_batch_error_samples": batch_errors[:3],
+        })
+    return quotes
+
+
+def trade_dates_through(as_of: date) -> list[date]:
+    """Return known A-share trading dates up to ``as_of``."""
+    with _TRADE_CALENDAR_LOCK:
+        cached_dates = list(_TRADE_CALENDAR_DATES)
+    if cached_dates and cached_dates[-1] >= as_of:
+        return [value for value in cached_dates if value <= as_of]
+    try:
+        frame = ak.tool_trade_date_hist_sina()
+        dates = pd.to_datetime(frame["trade_date"], errors="coerce").dropna()
+        all_dates = sorted(set(value.date() for value in dates))
+        if not all_dates:
+            return []
+        with _TRADE_CALENDAR_LOCK:
+            _TRADE_CALENDAR_DATES[:] = all_dates
+        return [value for value in all_dates if value <= as_of]
+    except Exception:
+        if cached_dates and cached_dates[-1] >= as_of:
+            return [value for value in cached_dates if value <= as_of]
+        return []
+
+
+def expected_latest_quote_date(
+    calendar: list[date],
+    cfg: ScanConfig,
+    now: datetime | None = None,
+) -> date | None:
+    """Latest trading date a current quote is expected to represent."""
+    if not calendar:
+        return None
+    expected = calendar[-1]
+    current = now or current_local_datetime()
+    as_of = parse_as_of_date(cfg).date()
+    if (
+        not cfg.as_of_date
+        and expected == as_of == current.date()
+        and _minute_of_day(current) < MARKET_DATA_OPEN_MINUTE
+        and len(calendar) > 1
+    ):
+        return calendar[-2]
+    return expected
+
+
+def merge_sina_quote_history(
+    df: pd.DataFrame,
+    quote: dict[str, object],
+    cfg: ScanConfig,
+    previous_trade_date: date | None,
+) -> pd.DataFrame | None:
+    """Append/replace one quote bar without creating a gap in daily history."""
+    if history_data_issue(df, cfg):
+        return None
+    required_fast_columns = {
+        "date", "open", "close", "high", "low", "volume", "pct_chg",
+        "ma5", "ma10", "ma20", "ma60",
+    }
+    fast_contract = bool(
+        required_fast_columns.issubset(df.columns)
+        and pd.api.types.is_datetime64_any_dtype(df["date"])
+        and df["date"].is_monotonic_increasing
+        and not df["date"].duplicated().any()
+    )
+    if fast_contract:
+        daily = df.copy()
+    else:
+        daily = df.copy()
+        daily["date"] = pd.to_datetime(daily["date"], errors="coerce")
+        daily = daily.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    if daily.empty:
+        return None
+
+    quote_date = pd.Timestamp(quote["date"])
+    last_date = daily.iloc[-1]["date"].date()
+    if last_date != quote_date.date() and last_date != previous_trade_date:
+        return None
+
+    previous_close = float(quote["previous_close"])
+    if last_date == previous_trade_date and previous_close > 0:
+        cached_close = float(daily.iloc[-1]["close"])
+        # A large mismatch usually means a corporate-action adjustment changed;
+        # force a full history refresh instead of mixing incompatible prices.
+        if abs(cached_close / previous_close - 1) > 0.02:
+            return None
+
+    row = {
+        "date": quote_date,
+        "open": float(quote["open"]),
+        "close": float(quote["close"]),
+        "high": float(quote["high"]),
+        "low": float(quote["low"]),
+        "volume": float(quote["volume"]),
+        "pct_chg": (
+            (float(quote["close"]) / previous_close - 1) * 100
+            if previous_close > 0 else float("nan")
+        ),
+    }
+    if fast_contract:
+        if last_date == quote_date.date():
+            last_index = daily.index[-1]
+            for column in ("股票代码", "成交额", "振幅", "涨跌额", "换手率"):
+                if column in daily.columns:
+                    daily.at[last_index, column] = np.nan
+            for column, value in row.items():
+                daily.at[last_index, column] = value
+        else:
+            append_row = {column: np.nan for column in daily.columns}
+            append_row.update(row)
+            daily = pd.concat(
+                [daily, pd.DataFrame([append_row])],
+                ignore_index=True,
+                sort=False,
+            )
+        last_index = daily.index[-1]
+        for window in (5, 10, 20, 60):
+            daily.at[last_index, f"ma{window}"] = (
+                daily["close"].iloc[-window:].mean()
+                if len(daily) >= window
+                else np.nan
+            )
+        daily.attrs.update(df.attrs)
+        return daily
+
+    daily = daily[daily["date"] != quote_date]
+    daily = pd.concat([daily, pd.DataFrame([row])], ignore_index=True, sort=False)
+    daily = daily.sort_values("date").reset_index(drop=True)
+    return add_ma(daily)
+
+
+def prepare_scan_cache(stocks: list[StockInfo], cfg: ScanConfig) -> dict[str, object]:
+    """Bulk-update recent caches so the main scan becomes local CPU work."""
+    started = time.time()
+    meta: dict[str, object] = {
+        "enabled": False,
+        "quotes": 0,
+        "prepared": 0,
+        "reused": 0,
+        "needs_full_fetch": len(stocks),
+        "elapsed_sec": 0.0,
+    }
+    if cfg.as_of_date or cfg.data_source not in {"auto", "sina"} or cfg.adjust == "hfq":
+        return meta
+
+    quote_diagnostics: dict[str, object] = {}
+    quotes = fetch_sina_quote_snapshot(stocks, cfg, diagnostics=quote_diagnostics)
+    meta["enabled"] = True
+    meta["quotes"] = len(quotes)
+    meta.update(quote_diagnostics)
+    calendar = trade_dates_through(parse_as_of_date(cfg).date())
+    if not calendar:
+        meta["calendar_error"] = "交易日历不可用，已禁用批量行情合并"
+        meta["elapsed_sec"] = round(time.time() - started, 1)
+        return meta
+    expected_quote_date = expected_latest_quote_date(calendar, cfg)
+    current = current_local_datetime()
+    completed_bars_only = bool(
+        not cfg.as_of_date and is_a_share_intraday(current)
+    )
+    meta["intraday_completed_bars_only"] = completed_bars_only
+    meta["latest_quote_date"] = (
+        expected_quote_date.isoformat() if expected_quote_date else ""
+    )
+    previous_by_date: dict[date, date | None] = {}
+    for quote in quotes.values():
+        quote_date = quote["date"]
+        if quote_date in previous_by_date:
+            continue
+        previous = [item for item in calendar if item < quote_date]
+        previous_by_date[quote_date] = previous[-1] if previous else None
+
+    def prepare_one(stock: StockInfo) -> str:
+        cached = load_recent_wash_ohlcv_cache(stock.code, cfg)
+        if cached is None:
+            return "needs_full_fetch"
+        quote = quotes.get(stock.code)
+        if quote is None:
+            return "needs_full_fetch"
+        if expected_quote_date is not None and quote["date"] != expected_quote_date:
+            return "needs_full_fetch"
+        try:
+            last = cached.iloc[-1]
+            last_date = pd.Timestamp(last["date"]).date()
+            if completed_bars_only and quote["date"] == current.date():
+                previous_trade_date = previous_by_date.get(quote["date"])
+                saved_at = float(cached.attrs.get("cache_saved_at") or 0)
+                saved = datetime.fromtimestamp(saved_at) if saved_at else None
+                prior_bar_was_provisional = bool(
+                    saved
+                    and saved.date() == last_date
+                    and _minute_of_day(saved) < MARKET_CLOSE_MINUTE
+                )
+                if (
+                    last_date != previous_trade_date
+                    or prior_bar_was_provisional
+                    or not math.isclose(
+                        float(last["close"]),
+                        float(quote["previous_close"]),
+                        rel_tol=1e-8,
+                        abs_tol=1e-4,
+                    )
+                ):
+                    return "needs_full_fetch"
+                mark_wash_cache_validated(stock.code, cfg)
+                return "reused"
+            unchanged = (
+                last_date == quote["date"]
+                and all(
+                    math.isclose(
+                        float(last[column]),
+                        float(quote[column]),
+                        rel_tol=1e-10,
+                        abs_tol=1e-8,
+                    )
+                    for column in ("open", "close", "high", "low", "volume")
+                )
+            )
+            if unchanged:
+                mark_wash_cache_validated(stock.code, cfg)
+                return "reused"
+        except (KeyError, TypeError, ValueError, IndexError):
+            pass
+        merged = merge_sina_quote_history(
+            cached,
+            quote,
+            cfg,
+            previous_by_date.get(quote["date"]),
+        )
+        if merged is None:
+            return "needs_full_fetch"
+        save_wash_ohlcv_cache(stock.code, cfg, merged, source="sina_batch")
+        return "prepared"
+
+    counts = {"prepared": 0, "reused": 0, "needs_full_fetch": 0}
+    max_workers = max(1, min(int(cfg.workers or 1), 24, len(stocks) or 1))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(prepare_one, stock) for stock in stocks]
+        for future in as_completed(futures):
+            try:
+                counts[future.result()] += 1
+            except Exception:
+                counts["needs_full_fetch"] += 1
+
+    meta.update(counts)
+    meta["elapsed_sec"] = round(time.time() - started, 1)
+    return meta
 
 
 def fetch_daily_cache(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
@@ -1914,7 +2657,12 @@ def fetch_daily_cache(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
             else:
                 daily["pct_chg"] = pd.to_numeric(daily["pct_chg"], errors="coerce")
                 daily["pct_chg"] = daily["pct_chg"].fillna(daily["close"].pct_change() * 100)
-            return add_ma(daily)
+            daily = completed_history_view(daily, cfg)
+            if history_data_issue(daily, cfg):
+                continue
+            return tag_wash_history(
+                add_ma(daily), "legacy_cache", stale_fallback=True
+            )
         except Exception:
             continue
     return None
@@ -1928,7 +2676,7 @@ def value_at(container: dict[str, list[float]], key: str, index: int) -> float |
     return None if value is None else float(value)
 
 
-def fetch_daily(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
+def fetch_daily(code: str, cfg: ScanConfig) -> pd.DataFrame:
     # 优先读取本项目持久化的当日缓存：同一 as_of 日期、且在 TTL 内的缓存直接复用，
     # 使当天的重复扫描（如调参重跑、Web 端多次触发）几乎不产生网络请求。
     cached_df = load_wash_ohlcv_cache(code, cfg)
@@ -1936,32 +2684,60 @@ def fetch_daily(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
         return cached_df
 
     errors: list[str] = []
-    sources = ("akshare", "yahoo") if cfg.data_source == "auto" else (cfg.data_source,)
-    sources = tuple(dict.fromkeys((*sources, "cache")))
+    short_history: pd.DataFrame | None = None
+    sources = (
+        ("sina", "akshare", "yahoo")
+        if cfg.data_source == "auto"
+        else (cfg.data_source,)
+    )
+    live_sources = tuple(source for source in sources if source != "cache")
 
-    for source in sources:
+    for source in live_sources:
         try:
-            if source == "akshare":
+            if source == "sina":
+                df = fetch_daily_sina(code, cfg)
+            elif source == "akshare":
                 df = fetch_daily_akshare(code, cfg)
             elif source == "yahoo":
                 df = fetch_daily_yahoo(code, cfg)
-            elif source == "cache":
-                df = fetch_daily_cache(code, cfg)
             else:
                 raise ValueError(f"Unknown data source: {source}")
 
-            if df is not None and not df.empty:
-                # 网络源成功后写回持久缓存（cache 源命中无需重复写）
-                if source != "cache":
-                    save_wash_ohlcv_cache(code, cfg, df)
+            if isinstance(df, pd.DataFrame):
+                df = completed_history_view(df, cfg)
+            issue = history_data_issue(df, cfg)
+            if not issue:
+                df = tag_wash_history(df, source)
+                save_wash_ohlcv_cache(code, cfg, df, source=source)
                 return df
-            errors.append(f"{source}=empty")
+            if issue.startswith("only ") and isinstance(df, pd.DataFrame) and not df.empty:
+                df = tag_wash_history(df, source)
+                if short_history is None or len(df) > len(short_history):
+                    short_history = df
+            errors.append(f"{source}={issue}")
         except Exception as exc:
             errors.append(f"{source}={brief_error(exc)}")
 
+    # 实时源全部失败后，优先使用洗盘扫描自己的近期完整缓存；再尝试
+    # 项目里的通用历史缓存。两者都必须通过行数和新鲜度校验。
+    cached_df = load_recent_wash_ohlcv_cache(code, cfg)
+    if cached_df is not None:
+        return cached_df
+    cached_df = fetch_daily_cache(code, cfg)
+    if cached_df is not None:
+        return cached_df
+    errors.append("cache=no recent complete history")
+
+    # A newly listed stock with genuine but insufficient history is a normal
+    # non-match, not a data-source outage.  Return its best short frame so
+    # scan_stock can apply the ordinary minimum-history check.
+    if short_history is not None:
+        return short_history
+
+    error = DailyDataSourceError(code, errors)
     if cfg.show_errors:
-        progress_write(f"Skip {code}: {'; '.join(errors)}")
-    return None
+        progress_write(f"Skip {code}: {error}")
+    raise error
 
 
 def parse_as_of_date(cfg: ScanConfig) -> datetime:
@@ -1973,17 +2749,31 @@ def parse_as_of_date(cfg: ScanConfig) -> datetime:
 def scan_stock(
     stock: StockInfo, cfg: ScanConfig, today: datetime
 ) -> list[dict[str, object]]:
-    try:
-        df = fetch_daily(stock.code, cfg)
-        min_rows = max(70, cfg.trend_rise_days + 10)
-        if df is None or len(df) < min_rows:
-            return []
+    rows, _ = scan_stock_with_diagnostics(stock, cfg, today)
+    return rows
 
-        return build_result_rows(stock, df, cfg, today)
-    except Exception as exc:
-        if cfg.show_errors:
-            progress_write(f"Skip {stock.code}: {exc}")
-        return []
+
+def scan_stock_with_diagnostics(
+    stock: StockInfo,
+    cfg: ScanConfig,
+    today: datetime,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    df = fetch_daily(stock.code, cfg)
+    diagnostics = {
+        "data_date": str(df.attrs.get("latest_data_date") or ""),
+        "data_source": str(df.attrs.get("data_source") or "unknown"),
+        "stale_fallback": bool(df.attrs.get("stale_fallback")),
+    }
+    if not diagnostics["data_date"] and len(df):
+        dates = pd.to_datetime(df.get("date"), errors="coerce").dropna()
+        if not dates.empty:
+            diagnostics["data_date"] = dates.max().date().isoformat()
+    min_rows = minimum_history_rows(cfg)
+    if len(df) < min_rows:
+        diagnostics["short_history"] = True
+        return [], diagnostics
+
+    return build_result_rows(stock, df, cfg, today), diagnostics
 
 
 def build_result_rows(
@@ -1998,6 +2788,7 @@ def build_result_rows(
             continue
 
         current_close = float(df.iloc[-1]["close"])
+        latest_bar_date = df.iloc[-1]["date"].strftime("%Y-%m-%d")
         end_close = float(row["close"])
         future_rise = (
             (current_close - end_close) / end_close * 100
@@ -2023,6 +2814,7 @@ def build_result_rows(
                 "备注": hit.note,
                 "结束收盘": round(end_close, 2),
                 "当前价": round(current_close, 2),
+                "最新行情日": latest_bar_date,
                 "后续涨幅%": round(future_rise, 2),
                 "趋势涨幅%": round(trend_rise_pct(df, hit.end_index, cfg), 2),
                 "洗盘回撤%": hit.drawdown_pct,
@@ -2036,6 +2828,7 @@ def scan_sequential(
     stocks: list[StockInfo], cfg: ScanConfig, today: datetime, show_progress: bool
 ) -> list[dict[str, object]]:
     found: list[dict[str, object]] = []
+    errors = 0
     iterator: Iterable[StockInfo]
     if show_progress:
         iterator = tqdm(stocks, desc="扫描中", unit="只")
@@ -2043,7 +2836,19 @@ def scan_sequential(
         iterator = stocks
 
     for stock in iterator:
-        found.extend(scan_stock(stock, cfg, today))
+        try:
+            found.extend(scan_stock(stock, cfg, today))
+        except Exception as exc:
+            errors += 1
+            if cfg.show_errors:
+                progress_write(f"Skip {stock.code}: {exc}")
+    if stocks and (len(stocks) - errors) * 5 < len(stocks) * 4:
+        raise RuntimeError(
+            f"扫描有效覆盖率过低（{len(stocks) - errors}/{len(stocks)}），"
+            "结果已作废"
+        )
+    if errors and show_progress:
+        progress_write(f"行情/规则错误：{errors} 只")
     return found
 
 
@@ -2051,6 +2856,7 @@ def scan_parallel(
     stocks: list[StockInfo], cfg: ScanConfig, today: datetime, show_progress: bool
 ) -> list[dict[str, object]]:
     found: list[dict[str, object]] = []
+    errors = 0
     progress = tqdm(
         total=len(stocks),
         desc="扫描中",
@@ -2063,10 +2869,23 @@ def scan_parallel(
                 executor.submit(scan_stock, stock, cfg, today) for stock in stocks
             ]
             for future in as_completed(futures):
-                found.extend(future.result())
-                progress.update(1)
+                try:
+                    found.extend(future.result())
+                except Exception as exc:
+                    errors += 1
+                    if cfg.show_errors:
+                        progress_write(f"Skip stock: {exc}")
+                finally:
+                    progress.update(1)
     finally:
         progress.close()
+    if stocks and (len(stocks) - errors) * 5 < len(stocks) * 4:
+        raise RuntimeError(
+            f"扫描有效覆盖率过低（{len(stocks) - errors}/{len(stocks)}），"
+            "结果已作废"
+        )
+    if errors and show_progress:
+        progress_write(f"行情/规则错误：{errors} 只")
     return found
 
 
@@ -2091,16 +2910,24 @@ def sort_wash_results(result: pd.DataFrame) -> pd.DataFrame:
 
 
 def resolve_scan_stocks(cfg: ScanConfig) -> list[StockInfo]:
-    """解析本次扫描的股票池，对全A扫描启用快速预筛选。
+    """Resolve the requested universe without silently dropping valid shapes.
 
-    抽取自 scan()，使 Web 路由（带进度回调的自定义扫描循环）也能复用
-    同一套预筛选逻辑，避免网页端始终走全量 5000 只。
+    The old spot prefilter is lossy: it imposes price/liquidity/board rules that
+    are absent from the pattern definition.  Full-A therefore stays complete
+    by default; the legacy speed/recall tradeoff requires an explicit opt-in.
     """
-    if cfg.stock_pool == 'all_a' and cfg.max_stocks == 0:
-        print("🚀 [洗盘扫描优化] 检测到全A股扫描，启用快速预筛选...")
+    if (
+        cfg.enable_lossy_prescreen
+        and cfg.stock_pool == "all_a"
+        and cfg.max_stocks == 0
+    ):
+        print("⚠️ [洗盘扫描] 已显式启用有损实时预筛选，结果可能漏票...")
         try:
             from wash_pattern_optimizer import pre_screen_wash_candidates
-            pre_filtered = pre_screen_wash_candidates(cfg.stock_pool)
+            pre_filtered = pre_screen_wash_candidates(
+                cfg.stock_pool,
+                allow_lossy=True,
+            )
 
             if pre_filtered:
                 # 预筛选返回 (代码, 名称) 列表；保留名称以填充结果文件“名称”列。
@@ -2129,15 +2956,17 @@ def scan(cfg: ScanConfig, show_progress: bool = True) -> pd.DataFrame:
     """
     洗盘扫描（优化版）
 
-    优化说明：
-    - 增加快速预筛选层，使用实时行情过滤
-    - 减少扫描范围：5000只 → 800-1500只
-    - 时间节省：60%+（8分钟 → 3分钟）
+    Full-A scans are complete by default.  Fast bulk quote/cache preparation
+    provides the speedup without a lossy stock-universe prefilter.
     """
     stocks = resolve_scan_stocks(cfg)
 
     if cfg.max_stocks > 0:
         stocks = stocks[: cfg.max_stocks]
+
+    # Web 路由有自己的进度循环，会显式调用同一预热函数；命令行直接运行时
+    # 也先批量更新缓存，避免退回逐股下载日线。
+    prepare_scan_cache(stocks, cfg)
 
     today = parse_as_of_date(cfg)
     if cfg.workers <= 1 or len(stocks) <= 1:
@@ -2275,6 +3104,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="关闭最新K线半完成形态预警（阴阴阳阴 / 阴阴阳阳阴）",
     )
     parser.add_argument(
+        "--enable-lossy-prescreen",
+        action="store_true",
+        help="显式启用有损实时预筛选（更快，但可能漏掉有效形态）",
+    )
+    parser.add_argument(
         "--no-ma-bullish",
         action="store_true",
         help="关闭 MA5>MA10>MA20>MA60 多头排列过滤",
@@ -2287,9 +3121,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--data-source",
-        choices=("auto", "akshare", "yahoo"),
+        choices=("auto", "sina", "akshare", "yahoo", "cache"),
         default=ScanConfig.data_source,
-        help="日线数据源：auto=AKShare 优先，失败后使用 Yahoo",
+        help="日线数据源：auto=新浪优先，失败后使用东方财富/Yahoo/近期缓存",
     )
     parser.add_argument("--output", default=ScanConfig.output)
     parser.add_argument(
@@ -2393,6 +3227,7 @@ def config_from_args(args: argparse.Namespace) -> ScanConfig:
         min_impulse_pct=args.min_impulse_pct,
         impulse_lookback=args.impulse_lookback,
         include_candidate_warnings=not args.no_candidate_warnings,
+        enable_lossy_prescreen=args.enable_lossy_prescreen,
         low_reversal_max_rise_pct=args.low_reversal_max_rise,
         low_reversal_require_no_step_down=args.low_reversal_require_no_step_down,
     )
