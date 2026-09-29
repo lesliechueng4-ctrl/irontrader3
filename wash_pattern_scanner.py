@@ -52,6 +52,7 @@ import pandas as pd
 import requests
 import numpy as np
 from tqdm import tqdm
+from runtime_paths import application_data_dir
 
 
 def progress_write(message: str) -> None:
@@ -84,7 +85,7 @@ class DailyDataSourceError(RuntimeError):
         super().__init__(f"{self.code} daily history unavailable: {detail}")
 
 
-DEFAULT_OUTPUT = str(Path(__file__).resolve().with_name("wash_pattern_results.csv"))
+DEFAULT_OUTPUT = str(application_data_dir() / "wash_pattern_results.csv")
 DEFAULT_WORKERS = 12
 _THREAD_LOCAL = threading.local()
 PROXY_ENV_KEYS = (
@@ -1443,7 +1444,7 @@ def normalize_stock_code(code: object) -> str:
 def candidate_cache_dirs() -> list[Path]:
     candidates = [
         Path.cwd() / "cache",
-        Path(__file__).resolve().with_name("cache"),
+        application_data_dir() / "cache",
         Path.home() / "Desktop" / "code" / "code" / "irontrader3" / "cache",
     ]
     unique: list[Path] = []
@@ -1901,7 +1902,7 @@ def fetch_daily_yahoo(code: str, cfg: ScanConfig) -> pd.DataFrame | None:
 
 def wash_ohlcv_cache_dir() -> Path:
     """洗盘扫描专用的 OHLCV 持久缓存目录。"""
-    d = Path(__file__).resolve().with_name("cache") / "wash_ohlcv"
+    d = application_data_dir() / "cache" / "wash_ohlcv"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -73,6 +73,19 @@ class DecisionMakerEnhancedGateTest(MarketGateTestMixin, unittest.TestCase):
     def setUp(self):
         self.dm = _bare(DecisionMakerEnhanced)
 
+    def test_explicit_emotion_snapshot_is_used_without_engine_cache(self):
+        self.dm.DRAGON_INTENDED_SINGLE = 0.30
+        self.dm._get_emotion = lambda: self.fail("engine emotion cache must not be read")
+        result = self.dm._apply_market_gate(
+            {'decision': 'BUY', 'confidence': 5, 'reason': 'ok'},
+            GOOD_MARKET,
+            emotion_snapshot={'score': 20},
+        )
+
+        self.assertEqual(result['decision'], 'WATCH')
+        self.assertEqual(result['emotion_gate']['emotion_score'], 20)
+        self.assertFalse(result['emotion_gate']['can_open'])
+
 
 class IgnoreResultWarningTest(unittest.TestCase):
     """_ignore_result 在空仓态应自动附加 risk_warning（仅增强版有该方法）"""

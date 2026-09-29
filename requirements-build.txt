@@ -1,0 +1,2 @@
+# Build-only dependency. End users do not need Python or this package.
+pyinstaller>=6.0

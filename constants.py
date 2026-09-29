@@ -273,6 +273,61 @@ class StockCodeConstants:
 
 
 # ==========================================
+# 日内分时看板常量
+# ==========================================
+class IntradayConfig:
+    """日内分时看板配置常量"""
+
+    # 轮询间隔（毫秒，前端使用）
+    CHART_POLL_INTERVAL_MS = 10000    # 分时图 10 秒
+    ORDERBOOK_POLL_INTERVAL_MS = 5000 # 盘口 5 秒
+
+    # 分时周期选项（分钟）
+    SCALE_OPTIONS = [1, 5, 15]
+    DEFAULT_SCALE = 5
+
+    # 分时数据默认拉取条数
+    DEFAULT_DATALEN_1M = 240   # 1 分钟：240 根 = 4 小时
+    DEFAULT_DATALEN_5M = 48    # 5 分钟：48 根 = 4 小时
+    DEFAULT_DATALEN_15M = 16   # 15 分钟：16 根 = 4 小时
+
+    # BOLL 参数
+    BOLL_PERIOD = 20
+    BOLL_STD_MULTIPLIER = 2
+
+    # MACD 参数（分时级别）
+    MACD_FAST = 12
+    MACD_SLOW = 26
+    MACD_SIGNAL = 9
+
+    # KDJ 参数
+    KDJ_N = 9
+    KDJ_M1 = 3
+    KDJ_M2 = 3
+
+    # 信号判定阈值
+    SIGNAL_MIN_CONDITIONS = 3        # 触发信号的最少条件数
+    KDJ_OVERSOLD = 20               # KDJ 超卖阈值
+    KDJ_OVERBOUGHT = 80             # KDJ 超买阈值
+    VWAP_PROXIMITY_PCT = 0.3        # VWAP 附近判定范围 (%)
+    VWAP_DEVIATION_PCT = 2.0        # VWAP 偏离判定范围 (%)
+    BOLL_PROXIMITY_PCT = 0.3        # BOLL 轨道附近判定范围 (%)
+    VOLUME_SHRINK_RATIO = 0.7       # 缩量判定量比
+    VOLUME_SURGE_RATIO = 2.0        # 放量判定量比
+    DAILY_SUPPORT_PROXIMITY = 0.01  # 日线支撑/压力附近 (1%)
+
+    # 盘口压力判定
+    PRESSURE_BUY_DOMINANT = 55      # 买方主导阈值 (%)
+    PRESSURE_SELL_DOMINANT = 45     # 卖方主导阈值 (%)
+
+    # 交易时段（扩展边界，含集合竞价和收盘后缓冲）
+    TRADING_START_HOUR = 9
+    TRADING_START_MINUTE = 15
+    TRADING_END_HOUR = 15
+    TRADING_END_MINUTE = 5
+
+
+# ==========================================
 # 导出所有常量类
 # ==========================================
 __all__ = [
@@ -288,4 +343,5 @@ __all__ = [
     'APILimitConstants',
     'ScoringWeights',
     'StockCodeConstants',
+    'IntradayConfig',
 ]

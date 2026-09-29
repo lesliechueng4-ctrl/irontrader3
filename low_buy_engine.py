@@ -3,9 +3,10 @@
 整合5个维度的评分，输出加权综合分和一票否决判断
 """
 
+import os
 import pandas as pd
-import requests
 import time
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 from data_fetcher import DataFetcher
@@ -15,6 +16,7 @@ from stock_fund_analyzer import StockFundAnalyzer
 from technical_scorer import TechnicalScorer
 from fundamental_scorer import FundamentalScorer
 from logger_config import get_logger
+from sina_spot_client import SinaSpotClient
 
 logger = get_logger(__name__)
 
@@ -53,6 +55,7 @@ class LowBuyEngine:
         self.fund_analyzer = StockFundAnalyzer(self.fetcher)
         self.technical_scorer = TechnicalScorer(self.fetcher)
         self.fundamental_scorer = FundamentalScorer(self.fetcher)
+        self._sina_spot_client = None  # 懒加载，见 _fetch_sina_spot_frame
 
         # 缓存市场情绪（一次分析多只股票时复用，带 TTL 防止常驻进程用陈旧情绪）
         self._cached_sentiment = None
@@ -63,25 +66,48 @@ class LowBuyEngine:
         self._emotion_filter = None
         self._cached_emotion = None
         self._emotion_cached_at = 0.0
+        self._emotion_lock = threading.Lock()
         self.EMOTION_CACHE_TTL = 300  # 秒
+        self._last_spot_frame = None
+        self._last_spot_frame_at = 0.0
         # 各决策意图的基准单票仓位（再由情绪单票上限裁剪）
         self.INTENDED_SINGLE = {'低吸': 0.20, '观察': 0.10}
 
     def _get_emotion(self) -> dict:
         """获取全局情绪过滤结果（5 分钟内复用缓存）。任何异常都降级为 None，不影响主流程。"""
         now = time.time()
-        if self._cached_emotion is not None and (now - self._emotion_cached_at) < self.EMOTION_CACHE_TTL:
+        if (now - self._emotion_cached_at) < self.EMOTION_CACHE_TTL:
             return self._cached_emotion
+
+        lock = getattr(self, "_emotion_lock", None)
+        if lock is None:
+            return self._refresh_emotion(now)
+        with lock:
+            now = time.time()
+            if (now - self._emotion_cached_at) < self.EMOTION_CACHE_TTL:
+                return self._cached_emotion
+            return self._refresh_emotion(now)
+
+    def _refresh_emotion(self, now: float) -> dict:
         try:
             if self._emotion_filter is None:
                 from market_emotion_filter import MarketEmotionFilter
                 self._emotion_filter = MarketEmotionFilter(self.fetcher)
             self._cached_emotion = self._emotion_filter.calculate_emotion_score()
-            self._emotion_cached_at = now
         except Exception as e:
             logger.warning(f"情绪闸计算失败，跳过仓位约束: {e}")
             self._cached_emotion = None
+        self._emotion_cached_at = now
         return self._cached_emotion
+
+    def _clear_scan_realtime_snapshot(self):
+        try:
+            fetcher = getattr(self, "fetcher", None)
+            clear_snapshot = getattr(fetcher, "clear_stock_realtime_snapshot", None)
+            if clear_snapshot:
+                clear_snapshot()
+        except Exception:
+            pass
 
     def _get_sentiment(self) -> dict:
         """获取市场情绪（5 分钟内复用缓存，过期自动刷新）"""
@@ -91,7 +117,12 @@ class LowBuyEngine:
             self._sentiment_cached_at = now
         return self._cached_sentiment
 
-    def analyze(self, stock_code: str, stock_sector: str = None) -> dict:
+    def analyze(
+        self,
+        stock_code: str,
+        stock_sector: str = None,
+        emotion_snapshot: dict = None,
+    ) -> dict:
         """
         对单只股票进行完整的低吸分析
         
@@ -122,6 +153,26 @@ class LowBuyEngine:
         # 获取股票名称
         realtime = self.fetcher.get_stock_realtime(clean_code)
         stock_name = realtime.get('name', '未知')
+        if realtime.get('error'):
+            error_message = f"实时行情数据不可用: {realtime['error']}"
+            logger.warning(f"低吸分析终止 {clean_code}: {error_message}")
+            return {
+                'stock_code': clean_code,
+                'stock_name': stock_name,
+                'total_score': 0.0,
+                'stock_score': 0.0,
+                'sentiment_coef': 1.0,
+                'decision': '回避',
+                'veto_triggered': False,
+                'veto_reason': None,
+                'emotion_gate': None,
+                'dimensions': {},
+                'data_error': True,
+                'error_code': 'REALTIME_DATA_ERROR',
+                'error': error_message,
+                'data_source_health': self.fetcher.get_data_source_health(),
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
 
         # === 维度① 市场情绪 ===
         sentiment_result = self._get_sentiment()
@@ -177,10 +228,16 @@ class LowBuyEngine:
         else:
             decision = '回避'
 
+        # === 位置检查：低吸 = 回调到支撑附近再买。评分高但价格不在低位时不给"低吸" ===
+        position_check = self._position_check(realtime, technical_result)
+        if decision == '低吸' and not position_check['ok']:
+            decision = '观察'
+
         # === 全局情绪闸：用 cap_position 实际约束开仓 ===
         # 冰点期(禁止开仓)将"低吸"信号强制下调为"回避"；其余区间按情绪裁剪单票仓位上限。
         emotion_gate = None
-        emotion = self._get_emotion()
+        # 统一研究入口可传入请求级快照，避免与最终结论使用不同的情绪缓存。
+        emotion = emotion_snapshot if emotion_snapshot is not None else self._get_emotion()
         if emotion:
             from market_emotion_filter import PositionManager
             # 意图单票仓位 = 决策基准 × 信心系数(综合分/100)，再由情绪单票上限裁剪。
@@ -256,6 +313,9 @@ class LowBuyEngine:
             'veto_triggered': veto,
             'veto_reason': veto_reason,
             'emotion_gate': emotion_gate,   # 全局情绪闸：仓位上限/是否被下调（None 表示情绪数据不可用）
+            'position_check': position_check,  # 价格位置是否适合低吸；不适合时"低吸"降为"观察"
+            'current_price': realtime.get('current'),
+            'change_pct': realtime.get('change_pct'),
             'dimensions': dimensions,
             'data_source_health': self.fetcher.get_data_source_health(),
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -276,7 +336,7 @@ class LowBuyEngine:
         Returns:
             按综合得分降序排列的分析结果列表
         """
-        print(f"🚀 [批量分析优化版] 开始分析 {len(stock_list)} 只股票...")
+        logger.info(f"[批量分析优化版] 开始分析 {len(stock_list)} 只股票...")
 
         # 预先获取市场情绪（所有股票共享）
         self._cached_sentiment = self.sentiment_analyzer.analyze()
@@ -290,11 +350,11 @@ class LowBuyEngine:
         for i, code in enumerate(stock_list):
             try:
                 if (i + 1) % 10 == 0:
-                    print(f"  [{i+1}/{total}] 进度 {(i+1)/total*100:.0f}%")
+                    logger.info(f"[{i+1}/{total}] 进度 {(i+1)/total*100:.0f}%")
                 result = self.analyze(code)
                 results.append(result)
             except Exception as e:
-                print(f"  ⚠️ 分析 {code} 失败: {e}")
+                logger.warning(f"分析 {code} 失败: {e}")
                 results.append({
                     'stock_code': code,
                     'stock_name': '分析失败',
@@ -309,7 +369,7 @@ class LowBuyEngine:
 
         # 按得分排序
         results.sort(key=lambda x: x['total_score'], reverse=True)
-        print(f"✅ 批量分析完成：成功 {len([r for r in results if r['total_score'] > 0])}/{total} 只")
+        logger.info(f"批量分析完成：成功 {len([r for r in results if r['total_score'] > 0])}/{total} 只")
         return results
 
     def _preload_shared_data(self, stock_list: List[str]):
@@ -318,18 +378,18 @@ class LowBuyEngine:
 
         将所有股票的共享数据一次性加载到缓存中：
         1. 实时行情（1次API调用）
-        2. K线数据（并发获取）
+        2. K线数据（默认串行，可通过环境变量开启并发）
 
         这样5个评分维度可以直接使用缓存，避免重复网络请求
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(f"批量预加载 {len(stock_list)} 只股票的共享数据...")
 
-        print(f"📦 批量预加载 {len(stock_list)} 只股票的共享数据...")
-
-        # 1. 批量获取实时行情（使用AKShare，1次调用获取全市场）
+        # 1. 批量获取实时行情（优先复用预筛全市场快照，避免精评再逐票打实时接口）
         try:
-            import akshare as ak
-            df_spot = ak.stock_zh_a_spot_em()
+            df_spot = getattr(self, "_last_spot_frame", None)
+            if df_spot is None or df_spot.empty or (time.time() - getattr(self, "_last_spot_frame_at", 0.0)) > 120:
+                import akshare as ak
+                df_spot = ak.stock_zh_a_spot_em()
 
             # 用代码建索引，避免对每只股票做 O(N) 全表扫描
             wanted = set(stock_list)
@@ -338,6 +398,7 @@ class LowBuyEngine:
             # 将实时行情写入缓存，键名/结构与 get_stock_realtime 保持一致，
             # 这样精评阶段读取 stock_realtime_{code} 时可直接命中
             cached = 0
+            snapshot = {}
             for code in stock_list:
                 try:
                     if code not in df_subset.index:
@@ -347,33 +408,53 @@ class LowBuyEngine:
                     if realtime is None:
                         continue
                     self.fetcher._set_cache(f"stock_realtime_{code}", realtime)
+                    snapshot[code] = realtime
                     cached += 1
                 except Exception:
                     continue
+            set_snapshot = getattr(self.fetcher, "set_stock_realtime_snapshot", None)
+            if set_snapshot and snapshot:
+                set_snapshot(snapshot, ttl=900)
 
-            print(f"  ✅ 实时行情预加载：{cached}/{len(stock_list)} 只")
+            logger.info(f"实时行情预加载：{cached}/{len(stock_list)} 只")
         except Exception as e:
-            print(f"  ⚠️ 实时行情预加载失败: {e}")
+            logger.warning(f"实时行情预加载失败: {e}")
 
-        # 2. 并发获取K线数据（10线程并发）
-        print(f"  📈 并发预加载K线数据（10线程）...")
+        raw_workers = os.getenv("LOWBUY_KLINE_PRELOAD_WORKERS", "1")
+        try:
+            configured_workers = int(raw_workers)
+        except (TypeError, ValueError):
+            configured_workers = 1
+        max_workers = max(1, min(configured_workers, len(stock_list) or 1))
+
+        logger.info(f"K线数据预加载（{max_workers}线程）...")
         success_count = 0
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {
-                executor.submit(self._preload_single_kline, code): code
-                for code in stock_list
-            }
-
-            for future in as_completed(futures):
+        if max_workers == 1:
+            for code in stock_list:
                 try:
-                    if future.result():
+                    if self._preload_single_kline(code):
                         success_count += 1
                 except Exception:
                     pass
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        print(f"  ✅ K线数据预加载：{success_count}/{len(stock_list)} 只")
-        print(f"📦 预加载完成！网络请求减少 80%+")
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self._preload_single_kline, code): code
+                    for code in stock_list
+                }
+
+                for future in as_completed(futures):
+                    try:
+                        if future.result():
+                            success_count += 1
+                    except Exception:
+                        pass
+
+        logger.info(f"K线数据预加载：{success_count}/{len(stock_list)} 只")
+        logger.info("预加载完成，网络请求减少 80%+")
 
     def _spot_row_to_realtime(self, code: str, row) -> Optional[dict]:
         """将 akshare spot_em 行转换为 get_stock_realtime 的标准结构。
@@ -431,68 +512,15 @@ class LowBuyEngine:
             return default
 
     def _fetch_sina_spot_frame(self) -> pd.DataFrame:
-        """Fetch A-share realtime quotes from Sina with AKShare-compatible columns."""
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn/',
-        }
-        base_url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
-        count_url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
-        page_size = 100
-        rows = []
+        """Fetch A-share realtime quotes from Sina with AK-compatible columns.
 
-        count_resp = requests.get(
-            count_url,
-            params={'node': 'hs_a'},
-            headers=headers,
-            timeout=15,
-            proxies={'http': None, 'https': None},
-        )
-        count_resp.raise_for_status()
-        total = int(count_resp.text.strip().strip('"'))
-        pages = (total + page_size - 1) // page_size
-
-        for page in range(1, pages + 1):
-            params = {
-                'page': page,
-                'num': page_size,
-                'sort': 'symbol',
-                'asc': 1,
-                'node': 'hs_a',
-                'symbol': '',
-                '_s_r_a': 'page',
-            }
-            resp = requests.get(
-                base_url,
-                params=params,
-                headers=headers,
-                timeout=15,
-                proxies={'http': None, 'https': None},
+        统一走 SinaSpotClient（共享 DataFetcher 的限流/熔断状态，分页并发）。
+        """
+        if self._sina_spot_client is None:
+            self._sina_spot_client = SinaSpotClient(
+                source_client=self.fetcher.source_client
             )
-            resp.raise_for_status()
-            for item in resp.json() or []:
-                code = str(item.get('code') or '').zfill(6)
-                current = self._safe_float(item.get('trade'))
-                if len(code) != 6 or current <= 0:
-                    continue
-                rows.append({
-                    '代码': code,
-                    '名称': str(item.get('name') or '').strip(),
-                    '最新价': current,
-                    '涨跌幅': self._safe_float(item.get('changepercent')),
-                    '成交额': self._safe_float(item.get('amount')),
-                    '成交量': self._safe_float(item.get('volume')),
-                    '最高': self._safe_float(item.get('high')),
-                    '最低': self._safe_float(item.get('low')),
-                    '今开': self._safe_float(item.get('open')),
-                    '昨收': self._safe_float(item.get('settlement')),
-                    '换手率': self._safe_float(item.get('turnoverratio')),
-                })
-            time.sleep(0.02)
-
-        if not rows:
-            return pd.DataFrame()
-        return pd.DataFrame(rows).drop_duplicates(subset=['代码'], keep='first').reset_index(drop=True)
+        return self._sina_spot_client.fetch_spot_frame(node="hs_a")
 
     def scan_candidates(
         self,
@@ -510,7 +538,7 @@ class LowBuyEngine:
         Returns:
             满足阈值的候选股列表
         """
-        print("开始全A股扫描低吸候选...")
+        logger.info("开始全A股扫描低吸候选...")
 
         def ensure_not_cancelled():
             if cancel_check and cancel_check():
@@ -537,7 +565,7 @@ class LowBuyEngine:
         self._cached_sentiment = self.sentiment_analyzer.analyze()
         ensure_not_cancelled()
         self._sentiment_cached_at = time.time()
-        print(f"市场情绪: {self._cached_sentiment['phase']} (得分: {self._cached_sentiment['score']})")
+        logger.info(f"市场情绪: {self._cached_sentiment['phase']} (得分: {self._cached_sentiment['score']})")
 
         # Step 2: 获取全A实时行情做初筛
         emit_progress(
@@ -550,7 +578,7 @@ class LowBuyEngine:
         )
         candidates = self._pre_screen(progress_callback=emit_progress)
         ensure_not_cancelled()
-        print(f"初筛通过: {len(candidates)} 只")
+        logger.info(f"初筛通过: {len(candidates)} 只")
 
         # Step 2.5: 批量预加载共享数据（实时行情 + K线并发预热），
         # 使后续精评阶段的各维度直接命中缓存，大幅减少串行网络请求
@@ -558,8 +586,12 @@ class LowBuyEngine:
             try:
                 self._preload_shared_data(candidates)
             except Exception as e:
-                print(f"⚠️ 预加载失败（不影响扫描）: {e}")
-            ensure_not_cancelled()
+                logger.warning(f"预加载失败（不影响扫描）: {e}")
+            try:
+                ensure_not_cancelled()
+            except Exception:
+                self._clear_scan_realtime_snapshot()
+                raise
 
         # Step 3: 精细评分（并发化）
         # 共享数据已预热 + 各股票缓存键互不相同，线程化是低风险的，
@@ -568,6 +600,7 @@ class LowBuyEngine:
         from threading import Lock
 
         results = []
+        reviewed_results = []
         total = len(candidates)
         errors = 0
         done = 0
@@ -593,11 +626,13 @@ class LowBuyEngine:
                     if cancel_check and cancel_check():
                         for pending in futures:
                             pending.cancel()
+                        self._clear_scan_realtime_snapshot()
                         raise RuntimeError("用户已取消扫描")
                     with lock:
                         done += 1
                         try:
                             result = future.result()
+                            reviewed_results.append(result)
                             if result['total_score'] >= min_score:
                                 results.append(result)
                         except Exception:
@@ -619,7 +654,29 @@ class LowBuyEngine:
 
         ensure_not_cancelled()
         results.sort(key=lambda x: x['total_score'], reverse=True)
-        print(f"扫描完成! 发现 {len(results)} 只候选股 (得分 >= {min_score})")
+        reviewed_results.sort(key=lambda x: x.get('total_score', 0), reverse=True)
+        self._last_scan_meta = {
+            'min_score': min_score,
+            'pre_screened': total,
+            'reviewed': len(reviewed_results),
+            'matched': len(results),
+            'errors': errors,
+            'top_score': reviewed_results[0].get('total_score') if reviewed_results else None,
+            'near_misses': [
+                {
+                    'stock_code': item.get('stock_code'),
+                    'stock_name': item.get('stock_name'),
+                    'total_score': item.get('total_score'),
+                    'stock_score': item.get('stock_score'),
+                    'decision': item.get('decision'),
+                    'veto_triggered': item.get('veto_triggered'),
+                    'veto_reason': item.get('veto_reason'),
+                }
+                for item in reviewed_results[:5]
+            ],
+        }
+        logger.info(f"扫描完成，发现 {len(results)} 只候选股 (得分 >= {min_score})")
+        self._clear_scan_realtime_snapshot()
         return results
 
     def _pre_screen(self, progress_callback=None) -> List[str]:
@@ -649,7 +706,7 @@ class LowBuyEngine:
             import akshare as ak
             import pandas as pd
 
-            print("🚀 [优化版预筛选] 开始智能预筛选...")
+            logger.info("[优化版预筛选] 开始智能预筛选...")
             emit_progress(
                 phase="获取行情",
                 message="正在获取全市场实时行情（1次API调用）...",
@@ -664,14 +721,16 @@ class LowBuyEngine:
                 df_spot = ak.stock_zh_a_spot_em()
                 source_name = "AKShare"
             except Exception as fetch_error:
-                print(f"[WARN] AKShare 全市场行情失败，改用新浪行情: {fetch_error}")
+                logger.warning(f"AKShare 全市场行情失败，改用新浪行情: {fetch_error}")
                 df_spot = self._fetch_sina_spot_frame()
                 source_name = "Sina"
 
             if df_spot is None or df_spot.empty:
                 raise RuntimeError("全市场行情为空")
+            self._last_spot_frame = df_spot
+            self._last_spot_frame_at = time.time()
 
-            print(f"✅ 成功获取全市场行情（{source_name}）：{len(df_spot)} 只股票")
+            logger.info(f"成功获取全市场行情（{source_name}）：{len(df_spot)} 只股票")
 
             emit_progress(
                 phase="筛选过滤",
@@ -693,7 +752,7 @@ class LowBuyEngine:
                 (~df_spot['名称'].str.contains('ST|退', na=False))  # 排除ST/退市
             ]
 
-            print(f"✅ 初步筛选完成：{len(filtered)} 只候选股票")
+            logger.info(f"初步筛选完成：{len(filtered)} 只候选股票")
 
             # ✅ 优化点3：按成交额排序，取前200只（预留缓冲）
             # 优先分析资金关注度最高的股票
@@ -701,8 +760,8 @@ class LowBuyEngine:
                 candidates = filtered.nlargest(200, '成交额')
                 candidate_codes = candidates['代码'].tolist()[:40]  # 最终返回40只
 
-                print(f"✅ 智能预筛选完成：选出 {len(candidate_codes)} 只高活跃度股票")
-                print(f"📊 性能提升：数据获取量从5000只 → 1次API调用（提升99%）")
+                logger.info(f"智能预筛选完成：选出 {len(candidate_codes)} 只高活跃度股票")
+                logger.info("性能提升：数据获取量从5000只 → 1次API调用（提升99%）")
 
                 emit_progress(
                     phase="预筛选完成",
@@ -715,7 +774,7 @@ class LowBuyEngine:
 
                 return candidate_codes
             else:
-                print("⚠️ 未找到符合条件的股票")
+                logger.warning("未找到符合条件的股票")
                 emit_progress(
                     phase="预筛选完成",
                     message="未找到符合低吸条件的股票",
@@ -727,7 +786,7 @@ class LowBuyEngine:
                 return []
 
         except Exception as e:
-            print(f"❌ 智能预筛选失败，回退到传统方式: {e}")
+            logger.warning(f"智能预筛选失败，回退到传统方式: {e}")
             # 如果优化版失败，回退到原来的腾讯API方式
             return self._pre_screen_legacy(progress_callback)
 
@@ -736,7 +795,7 @@ class LowBuyEngine:
         传统预筛选方式（备用）
         仅在智能预筛选失败时使用
         """
-        print("⚠️ 使用传统预筛选方式（腾讯API）...")
+        logger.warning("使用传统预筛选方式（腾讯API）...")
         # 这里保留原来的腾讯API逻辑作为备用
         # 为了简化，这里返回空列表，实际部署时可以保留完整的原逻辑
         return []
@@ -752,6 +811,39 @@ class LowBuyEngine:
         except (TypeError, ValueError):
             return 1.0
         return 1.0 + (s - 50.0) / 50.0 * 0.15
+
+    # 低吸位置：离日线支撑的上限、当日涨幅上限
+    MAX_ABOVE_SUPPORT_PCT = 5.0
+    MAX_DAY_GAIN_PCT = 5.0
+
+    @classmethod
+    def _position_check(cls, realtime: dict, technical: dict) -> dict:
+        """
+        评分只说明"这只票值不值得低吸"，位置决定"现在是不是低吸点"。
+        当日涨停 / 当日已大涨 / 离支撑太远 时，结论从"低吸"降为"观察（等回踩）"。
+        """
+        price = float(realtime.get('current') or 0)
+        change = float(realtime.get('change_pct') or 0)
+        try:
+            support = float((technical or {}).get('support_level') or 0)
+        except (TypeError, ValueError):
+            support = 0.0
+        dist = round((price - support) / support * 100, 2) if price > 0 and support > 0 else None
+
+        reason = None
+        if realtime.get('is_limit_up'):
+            reason = '当日涨停，不是低吸位置，等回踩再看'
+        elif change >= cls.MAX_DAY_GAIN_PCT:
+            reason = f'当日已涨 {change:.1f}%，不追高，等回踩再看'
+        elif dist is not None and dist > cls.MAX_ABOVE_SUPPORT_PCT:
+            reason = f'现价高出日线支撑 {dist:.1f}%（支撑 {support:.2f}），等回踩到支撑附近'
+        return {
+            'ok': reason is None,
+            'reason': reason,
+            'dist_support_pct': dist,
+            'support': round(support, 2) if support > 0 else None,
+            'max_above_support_pct': cls.MAX_ABOVE_SUPPORT_PCT,
+        }
 
     def _check_veto(self, sentiment: dict, sector: dict, fund: dict,
                     fundamental: dict, technical: dict = None) -> tuple:

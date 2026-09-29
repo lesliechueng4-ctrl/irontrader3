@@ -230,12 +230,12 @@ function scannerJobOptions(scannerKey) {
             startUrl: `/api/lowbuy/candidates/start?min_score=${encodeURIComponent(getScanSettings().min_score)}`,
             statusUrlBase,
             btnId: 'scan-btn',
-            normalText: '全A低吸扫描',
+            normalText: '全A初筛 · 活跃Top40精评',
             busyText: '扫描中...',
-            loadingText: '正在启动全A低吸扫描...',
-            title: '全A低吸扫描',
+            loadingText: '正在全A初筛，并对成交活跃 Top40 做完整评分...',
+            title: '全A初筛 · 活跃Top40精评',
             emptyText: '未发现符合条件的低吸候选',
-            renderResult: (result) => renderCandidates(result.data || []),
+            renderResult: (result) => renderCandidates(result.data || [], result.meta || {}),
         };
     }
     if (scannerKey === 'hero_scan') {

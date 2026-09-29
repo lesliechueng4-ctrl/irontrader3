@@ -4,6 +4,7 @@ IronTrader Stock Selector Module
 """
 
 from typing import Dict, List, Optional
+from buyability import check_limit_buyability, normalize_trade_time
 from data_fetcher import DataFetcher
 
 
@@ -96,38 +97,11 @@ class StockSelector:
     @staticmethod
     def _normalize_trade_time(value: str) -> str:
         """Normalize pool timestamps before buyability comparisons."""
-        digits = ''.join(ch for ch in str(value or '').strip() if ch.isdigit())
-        if len(digits) == 6:
-            return f"{digits[0:2]}:{digits[2:4]}:{digits[4:6]}"
-        if len(digits) == 4:
-            return f"{digits[0:2]}:{digits[2:4]}:00"
-        text = str(value or '').strip()
-        if len(text) == 5 and text.count(':') == 1:
-            return f"{text}:00"
-        return text
-    
+        return normalize_trade_time(value)
+
     def _check_buyability(self, stock: Dict) -> tuple:
-        """
-        检查涨停股是否可买
-        Returns:
-            (is_buyable: bool, reason: str)
-        """
-        first_limit_time = self._normalize_trade_time(stock.get('first_limit_time', ''))
-        
-        # 一字板判定：开盘就涨停（09:25-09:30封板）
-        if first_limit_time and first_limit_time <= '09:30:00':
-            return False, '一字板，无法买入'
-        
-        # 秒板判定：开盘后1分钟内涨停（09:30-09:31）
-        if first_limit_time and first_limit_time <= '09:31:00':
-            return False, '秒板，买入困难'
-        
-        # 换手率判定：封板后换手率极低说明封死
-        turnover_rate = stock.get('turnover_rate', 0)
-        if turnover_rate < 1:
-            return False, '封板牢固，买入困难'
-        
-        return True, '可尝试排板买入'
+        """检查涨停股是否可买，规则见 buyability.check_limit_buyability"""
+        return check_limit_buyability(stock.get('first_limit_time', ''), stock.get('turnover_rate', 0))
     
     def _check_leader(self, stock: Dict, zt_pool: List[Dict]) -> bool:
         """

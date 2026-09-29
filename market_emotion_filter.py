@@ -170,6 +170,22 @@ class MarketEmotionFilter:
     def _today_str() -> str:
         return datetime.now().strftime("%Y%m%d")
 
+    def _data_as_of(self) -> str:
+        """Best available market-data timestamp, separate from calculation time."""
+        meta = getattr(self.fetcher, "limit_up_pool_meta", None) or {}
+        value = str(meta.get("as_of") or "").strip()
+        if value:
+            return value
+        snapshot_loader = getattr(self.fetcher, "load_zt_snapshot", None)
+        if callable(snapshot_loader):
+            try:
+                snapshot = snapshot_loader()
+                if snapshot:
+                    return str(snapshot.get("as_of") or snapshot.get("date") or "").strip()
+            except Exception:
+                pass
+        return ""
+
     SPOT_STALE_MAX = 1800  # 秒：快照源失败时，最多接受多旧的过期快照（大面率分钟级误差可接受）
 
     def _get_spot_snapshot(self, force: bool = False) -> Optional[pd.DataFrame]:
@@ -675,6 +691,7 @@ class MarketEmotionFilter:
                 "level": level,
                 "confidence": 0.0,
                 "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "data_as_of": self._data_as_of(),
                 "cached": False,
                 "degraded": True,
                 "dimensions": dimensions,
@@ -692,6 +709,7 @@ class MarketEmotionFilter:
             "level": level,
             "confidence": confidence,
             "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "data_as_of": self._data_as_of(),
             "cached": False,
             "dimensions": dimensions,
             "position": PositionManager.decide(total),

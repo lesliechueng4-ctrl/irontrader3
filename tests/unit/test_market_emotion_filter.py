@@ -226,6 +226,19 @@ class ResultCacheTest(unittest.TestCase):
             flt.calculate_emotion_score(force=True)      # 强制重算
             self.assertGreater(prev_mock.call_count, calls_after_cache)
 
+    def test_result_exposes_underlying_market_data_time_when_available(self):
+        fetcher = _FakeFetcher()
+        fetcher.limit_up_pool_meta = {"as_of": "2026-08-11 15:00:00"}
+        flt = MarketEmotionFilter(data_fetcher=fetcher)
+        prev_df = pd.DataFrame({"代码": ["1"], "名称": ["x"], "涨跌幅": [1.0]})
+        dt_df = pd.DataFrame({"代码": ["1"]})
+        with patch.object(mef.ak, "stock_zh_a_spot_em", side_effect=RuntimeError("net")), \
+             patch.object(mef.ak, "stock_zt_pool_previous_em", return_value=prev_df), \
+             patch.object(mef.ak, "stock_zt_pool_dtgc_em", return_value=dt_df):
+            result = flt.calculate_emotion_score()
+
+        self.assertEqual(result["data_as_of"], "2026-08-11 15:00:00")
+
 
 class IntegrationScoreTest(unittest.TestCase):
     def test_full_score_all_sources_ok(self):

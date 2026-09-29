@@ -281,7 +281,7 @@ class WashPatternDataSourceTest(unittest.TestCase):
         self.assertEqual(result.iloc[-1]["date"].strftime("%Y-%m-%d"), "2026-08-05")
 
     def test_merge_sina_quote_appends_only_without_trading_day_gap(self):
-        cfg = scanner.ScanConfig()
+        cfg = scanner.ScanConfig(cache_max_stale_days=90)
         frame = scanner.add_ma(history_frame(rows=90, end="2026-08-06"))
         previous_close = float(frame.iloc[-1]["close"])
         quote = {
@@ -307,7 +307,7 @@ class WashPatternDataSourceTest(unittest.TestCase):
         self.assertIsNone(rejected)
 
     def test_prepare_scan_cache_bulk_updates_only_contiguous_histories(self):
-        cfg = scanner.ScanConfig(workers=2)
+        cfg = scanner.ScanConfig(workers=2, cache_max_stale_days=90)
         stocks = [
             scanner.StockInfo("600519", "贵州茅台"),
             scanner.StockInfo("000001", "平安银行"),

@@ -3,67 +3,12 @@ IronTrader Data Fetcher Module
 使用 AKShare 获取股票市场数据
 """
 
-# ⚠️ 彻底禁用代理 - 在导入akshare之前完成
 import os
 import sys
-
-# Step 1: 清除所有代理环境变量
-proxy_vars = [
-    'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-    'NO_PROXY', 'no_proxy', 'ALL_PROXY', 'all_proxy',
-    'FTP_PROXY', 'ftp_proxy', 'SOCKS_PROXY', 'socks_proxy'
-]
-
-for var in proxy_vars:
-    if var in os.environ:
-        del os.environ[var]
-    os.environ[var] = ''
-
-os.environ['NO_PROXY'] = '*'
-
-# Step 2: 禁用urllib3代理
-import urllib3
-urllib3.disable_warnings()
-
-original_proxy_from_url = urllib3.poolmanager.proxy_from_url
-def patched_proxy_from_url(*args, **kwargs):
-    return None
-urllib3.poolmanager.proxy_from_url = patched_proxy_from_url
-
-# Step 3: Patch requests的HTTPAdapter
-import requests
-from requests.adapters import HTTPAdapter
-
-_original_send = HTTPAdapter.send
-
-def patched_send(self, request, **kwargs):
-    """强制不使用代理"""
-    kwargs['proxies'] = {'http': None, 'https': None}
-    kwargs.setdefault('timeout', 30)
-    return _original_send(self, request, **kwargs)
-
-HTTPAdapter.send = patched_send
-
-# Step 4: 阻止requests从Windows注册表读取代理
-# Windows系统会在注册表中存储代理设置(127.0.0.1:7897)
-# requests库会自动读取这些设置，导致连接失败
-# 我们需要完全禁用这个功能
-import requests.utils
-
-_original_get_environ_proxies = requests.utils.get_environ_proxies
-
-def patched_get_environ_proxies(url, no_proxy=None):
-    """阻止从系统环境（包括Windows注册表）读取代理"""
-    return {}  # 总是返回空代理字典
-
-requests.utils.get_environ_proxies = patched_get_environ_proxies
 
 from logger_config import get_logger
 logger = get_logger(__name__)
 
-logger.info("已启用四层代理禁用机制（环境变量 + urllib3 + HTTPAdapter + Windows注册表）")
-
-# 现在可以安全导入akshare了
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
@@ -74,6 +19,9 @@ import time
 from pathlib import Path
 from cache_manager import CacheManager
 from data_source_client import DataSourceClient
+from runtime_paths import application_data_dir
+
+_AKSHARE_HISTORY_LOCK = threading.Lock()
 
 
 class DataFetcher:
@@ -81,13 +29,16 @@ class DataFetcher:
     
     def __init__(self):
         # 使用新的缓存管理器（两级缓存：内存 + 文件）
-        self.cache_manager = CacheManager(cache_dir="cache")
+        self.cache_manager = CacheManager(cache_dir=application_data_dir() / "cache")
         self.source_client = DataSourceClient()
         # 数据源故障防护：失败冷却（负缓存）+ 同键请求去重（防击穿）
         self._fail_until: Dict[str, float] = {}
         self._pool_lock = threading.Lock()
         # 最近一次涨停池数据的元信息（as_of/stale），供上层展示数据新鲜度
         self.limit_up_pool_meta: Dict[str, object] = {}
+        # 批量扫描期间复用同一份实时行情快照，避免短 TTL 在长任务中反复失效
+        self._stock_realtime_snapshot: Dict[str, Dict] = {}
+        self._stock_realtime_snapshot_expires_at = 0.0
 
     FAIL_COOLDOWN = 60  # 秒：外部源失败后的冷却期，期间直接走降级不打网络
 
@@ -207,6 +158,21 @@ class DataFetcher:
     def _set_cache(self, key: str, data: any):
         """设置缓存"""
         self.cache_manager.set(key, data)
+
+    def set_stock_realtime_snapshot(self, snapshot: Dict[str, Dict], ttl: float = 600):
+        """Temporarily pin stock realtime quotes for one scanner run."""
+        normalized = {
+            self._normalize_code(code): data
+            for code, data in (snapshot or {}).items()
+            if data
+        }
+        self._stock_realtime_snapshot = normalized
+        self._stock_realtime_snapshot_expires_at = time.time() + max(0, float(ttl))
+
+    def clear_stock_realtime_snapshot(self):
+        """Clear the temporary scanner realtime quote snapshot."""
+        self._stock_realtime_snapshot = {}
+        self._stock_realtime_snapshot_expires_at = 0.0
     
     def clear_cache(self):
         """清除所有缓存"""
@@ -734,6 +700,15 @@ class DataFetcher:
         """
         # 移除后缀
         clean_code = code.split('.')[0]
+
+        snapshot = getattr(self, "_stock_realtime_snapshot", None)
+        if snapshot:
+            if time.time() < getattr(self, "_stock_realtime_snapshot_expires_at", 0.0):
+                snapshot_data = snapshot.get(clean_code)
+                if snapshot_data:
+                    return snapshot_data
+            else:
+                self.clear_stock_realtime_snapshot()
         
         cache_key = f"stock_realtime_{clean_code}"
         cached = self._get_cache(cache_key)
@@ -834,7 +809,8 @@ class DataFetcher:
                 multiplier = 10_000.0
                 text = text[:-1]
             return float(text) * multiplier
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse float from {value!r}: {e}")
             return 0.0
 
     @staticmethod
@@ -843,7 +819,8 @@ class DataFetcher:
             if value is None or pd.isna(value):
                 return None
             return int(float(str(value).replace(',', '').strip()))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse int from {value!r}: {e}")
             return None
 
     def get_sector_money_flow_map(self, force_refresh: bool = False) -> Dict[str, Dict]:
@@ -1075,8 +1052,10 @@ class DataFetcher:
         last_error = None
         for source_name, loader, volume_multiplier in history_loaders:
             try:
+                with _AKSHARE_HISTORY_LOCK:
+                    raw_df = loader()
                 df = self._normalize_history_frame(
-                    loader(),
+                    raw_df,
                     volume_multiplier=volume_multiplier,
                     source_name=source_name,
                 )

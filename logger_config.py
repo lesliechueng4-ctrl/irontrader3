@@ -9,9 +9,10 @@ import threading
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from runtime_paths import application_data_dir
 
 # 日志目录
-LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR = application_data_dir() / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 # 日志格式
@@ -67,7 +68,9 @@ def _shared_handlers(level):
         if _CONSOLE_HANDLER is None:
             _CONSOLE_HANDLER = logging.StreamHandler(sys.stdout)
             _CONSOLE_HANDLER.setFormatter(logging.Formatter(CONSOLE_FORMAT))
-        _CONSOLE_HANDLER.setLevel(level)
+        # 后台（pythonw）运行时控制台输出落在文件里，只保留错误，常规日志看 irontrader.log
+        console_level = os.getenv("IRONTRADER_CONSOLE_LOG_LEVEL", "").upper()
+        _CONSOLE_HANDLER.setLevel(getattr(logging, console_level, level) if console_level else level)
 
         if _FILE_HANDLER is None:
             _FILE_HANDLER = RotatingFileHandler(
@@ -113,6 +116,33 @@ def setup_logger(name=None, level=logging.INFO):
 def get_logger(name):
     """快捷方法：获取或创建 logger"""
     return setup_logger(name)
+
+
+# 旧版按日期命名的日志（irontrader_YYYYMMDD.log）与一次性 server_*_stdout/stderr.log
+# 不参与滚动，只会越积越多；启动时按保留天数清理。LOG_RETENTION_DAYS=0 表示不清理。
+LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "14"))
+_LEGACY_LOG_PATTERNS = ("irontrader_*.log", "server_*_std*.log")
+
+
+def cleanup_legacy_logs(retention_days=None, log_dir=None):
+    """删除超过保留天数的旧版日期日志，返回 (删除文件数, 释放字节数)。"""
+    days = LOG_RETENTION_DAYS if retention_days is None else retention_days
+    if days <= 0:
+        return 0, 0
+    directory = Path(log_dir) if log_dir else LOG_DIR
+    cutoff = time.time() - days * 86400
+    removed, freed = 0, 0
+    for pattern in _LEGACY_LOG_PATTERNS:
+        for path in directory.glob(pattern):
+            try:
+                stat = path.stat()
+                if path.is_file() and stat.st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+                    freed += stat.st_size
+            except OSError:
+                continue
+    return removed, freed
 
 
 # 默认 logger

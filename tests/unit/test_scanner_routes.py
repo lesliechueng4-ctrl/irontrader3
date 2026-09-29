@@ -12,8 +12,7 @@ import scanner_routes
 
 class ScannerRoutesTest(unittest.TestCase):
     def setUp(self):
-        with scanner_routes._SCAN_JOBS_LOCK:
-            scanner_routes._SCAN_JOBS.clear()
+        # 任务库由 tests/unit/conftest.py 的 isolated_task_store 夹具替换为临时库
         app = Flask(__name__)
         app.register_blueprint(scanner_routes.scanner_bp)
         self.client = app.test_client()
@@ -436,6 +435,8 @@ class ScannerRoutesTest(unittest.TestCase):
 
         payload = response.get_json()
         self.assertEqual(response.status_code, 409)
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "SCAN_BUSY")
         self.assertFalse(payload["job_id"])
         self.assertIsNone(payload["job"])
 
@@ -468,13 +469,13 @@ class ScannerRoutesTest(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertTrue(payload["success"])
-            job_id = payload["job_id"]
+            job_id = payload["data"]["id"]
 
             job = None
             for _ in range(20):
                 status_response = self.client.get(f"/api/scanners/jobs/{job_id}")
                 self.assertEqual(status_response.status_code, 200)
-                job = status_response.get_json()["job"]
+                job = status_response.get_json()["data"]
                 if job["status"] == "completed":
                     break
                 time.sleep(0.05)
@@ -519,13 +520,13 @@ class ScannerRoutesTest(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertTrue(payload["success"])
-            job_id = payload["job_id"]
+            job_id = payload["data"]["id"]
 
             job = None
             for _ in range(20):
                 status_response = self.client.get(f"/api/scanners/jobs/{job_id}")
                 self.assertEqual(status_response.status_code, 200)
-                job = status_response.get_json()["job"]
+                job = status_response.get_json()["data"]
                 if job["status"] == "completed":
                     break
                 time.sleep(0.05)

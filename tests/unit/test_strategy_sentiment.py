@@ -183,3 +183,19 @@ class ChipQualityStrategySentimentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_breadth_is_none_instead_of_estimate_when_sources_fail(monkeypatch):
+    """涨跌家数取不到时不能再按涨停数估算一个 50% 冒充真实数据"""
+    import market_sentiment
+    from market_sentiment import MarketSentimentAnalyzer
+
+    market_sentiment._BREADTH_CACHE.update(at=0.0, value=None)
+    analyzer = MarketSentimentAnalyzer.__new__(MarketSentimentAnalyzer)
+    monkeypatch.setattr(analyzer, "_breadth_from_eastmoney", lambda: None)
+    monkeypatch.setattr(analyzer, "_breadth_from_sina", lambda: None)
+    assert analyzer._get_market_breadth() is None
+
+    monkeypatch.setattr(analyzer, "_breadth_from_sina", lambda: (3100, 2200, 5400))
+    assert analyzer._get_market_breadth() == (3100, 2200, 5400)
+    market_sentiment._BREADTH_CACHE.update(at=0.0, value=None)

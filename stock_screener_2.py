@@ -38,6 +38,8 @@ import ta
 from tqdm import tqdm
 from datetime import datetime, timedelta
 import warnings
+
+from sina_spot_client import SinaSpotClient
 warnings.filterwarnings("ignore")
 
 
@@ -153,7 +155,6 @@ def _filter_stock_pool(df):
 
 def get_all_stocks(force_refresh=False):
     """获取A股股票列表；同一进程、同一天复用新浪列表。"""
-    import requests
     print("📋 获取股票列表...")
 
     cache_key = _stock_pool_cache_key()
@@ -165,41 +166,9 @@ def get_all_stocks(force_refresh=False):
                 print(f"✅ 共 {len(result)} 只股票待筛选（股票池缓存）")
                 return result
 
-    NO_PROXY = {"http": None, "https": None}
-    HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Referer": "http://finance.sina.com.cn/",
-    }
-
     def fetch_sina_market(node):
-        """分页拉取新浪财经某市场的全部股票"""
-        # 先获取总数
-        count_url = ("http://vip.stock.finance.sina.com.cn/quotes_service"
-                     "/api/json_v2.php/Market_Center.getHQNodeStockCount")
-        r = requests.get(count_url, params={"node": node}, headers=HEADERS,
-                         proxies=NO_PROXY, timeout=15)
-        total = int(r.text.strip().strip('"'))
-
-        data_url = ("http://vip.stock.finance.sina.com.cn/quotes_service"
-                    "/api/json_v2.php/Market_Center.getHQNodeDataSimple")
-        records = []
-        page_size = 200
-        pages = (total + page_size - 1) // page_size
-        for pg in range(1, pages + 1):
-            params = {
-                "page": pg, "num": page_size,
-                "sort": "symbol", "asc": 1,
-                "node": node, "symbol": "", "_s_r_a": "page",
-            }
-            r2 = requests.get(data_url, params=params, headers=HEADERS,
-                              proxies=NO_PROXY, timeout=15)
-            items = r2.json()
-            for item in items:
-                sym = item.get("symbol", "")          # e.g. "sh600000"
-                code = item.get("code", sym[-6:])      # 6位纯数字
-                name = item.get("name", "")
-                records.append({"code": str(code).zfill(6), "name": name})
-        return records
+        """分页拉取新浪财经某市场的全部股票（统一走 SinaSpotClient）"""
+        return SinaSpotClient().fetch_name_list(node)
 
     try:
         backend = _history_backend()

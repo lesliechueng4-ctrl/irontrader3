@@ -9,6 +9,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from data_fetcher import DataFetcher
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class SectorFlowScorer:
@@ -46,6 +49,9 @@ class SectorFlowScorer:
         if not stock_sector:
             stock_sector = self._get_stock_sector(stock_code)
 
+        if not stock_sector or stock_sector == '未知':
+            return self._neutral_result(stock_sector or '未知', 'stock_sector_missing')
+
         # 获取板块资金流向
         sector_flow = self._get_sector_flow(stock_sector)
         
@@ -54,6 +60,9 @@ class SectorFlowScorer:
         
         # 获取板块龙头状态
         leader_status = self._get_leader_status(stock_sector)
+
+        if sector_flow.get('has_data') is False and sector_zt_count == 0 and leader_status in ('走弱', '无数据'):
+            return self._neutral_result(stock_sector, 'sector_flow_missing')
         
         # 高低切换方向识别
         switching = self._detect_switching(stock_sector, sector_flow)
@@ -76,6 +85,26 @@ class SectorFlowScorer:
                 'sector_leader_status': leader_status,
                 'switching_direction': switching,
                 'sector_change_pct': sector_flow.get('change_pct', 0),
+            }
+        }
+
+    @staticmethod
+    def _neutral_result(sector_name: str, reason: str = 'no_data') -> dict:
+        return {
+            'score': 50,
+            'status': '未知',
+            'sector_name': sector_name or '未知',
+            'details': {
+                'sector_net_inflow': 0,
+                'sector_net_inflow_pct': 0,
+                'sector_rank': 0,
+                'total_sectors': 0,
+                'sector_limit_up_count': 0,
+                'sector_leader_status': '无数据',
+                'switching_direction': '中性',
+                'sector_change_pct': 0,
+                'data_missing': True,
+                'missing_reason': reason,
             }
         }
 
@@ -134,6 +163,11 @@ class SectorFlowScorer:
                     self.fetcher._set_cache(cache_key, sector)
                 return sector
 
+        sector = self._get_stock_sector_from_eastmoney(clean_code)
+        if sector and sector != '未知':
+            self.fetcher._set_cache(cache_key, sector)
+            return sector
+
         # 使用 akshare 获取个股信息
         try:
             df = ak.stock_individual_info_em(symbol=clean_code)
@@ -147,8 +181,40 @@ class SectorFlowScorer:
                             self.fetcher._set_cache(cache_key, value)
                         return value
         except Exception as e:
-            print(f"获取 {clean_code} 板块信息失败: {e}")
+            logger.warning(f"获取 {clean_code} 板块信息失败: {e}")
 
+        return '未知'
+
+    def _get_stock_sector_from_eastmoney(self, code: str) -> str:
+        """用东方财富 quote 接口兜底获取行业，规避 AKShare 个股信息结构变化。"""
+        try:
+            source_client = getattr(self.fetcher, 'source_client', None)
+            if source_client is None:
+                return '未知'
+
+            secid = f"1.{code}" if code.startswith('6') else f"0.{code}"
+            result = source_client.get(
+                "eastmoney",
+                "https://push2.eastmoney.com/api/qt/stock/get",
+                params={
+                    'secid': secid,
+                    'fields': 'f57,f58,f127',
+                    'ut': 'b2884a393a59ad64002292a3e90d46a5',
+                },
+                headers={
+                    'User-Agent': 'Mozilla/5.0',
+                    'Referer': 'http://quote.eastmoney.com',
+                },
+                timeout=6,
+            )
+            if not result.ok or not result.response:
+                return '未知'
+            data = result.response.json().get('data') or {}
+            value = str(data.get('f127') or '').strip()
+            if value and value not in ('-', '--', 'None', '未知'):
+                return value
+        except Exception as e:
+            logger.warning(f"东方财富获取 {code} 板块信息失败: {e}")
         return '未知'
 
     def _get_sector_flow(self, sector_name: str) -> dict:
@@ -158,6 +224,9 @@ class SectorFlowScorer:
 
         flow_map = self.fetcher.get_sector_money_flow_map()
         total_sectors = len(flow_map) if flow_map else 0
+
+        if not flow_map:
+            return {'net_inflow': None, 'net_inflow_pct': 0, 'rank': 0, 'total': 0, 'change_pct': 0, 'has_data': False}
 
         if flow_map and sector_name in flow_map:
             data = flow_map[sector_name]
@@ -181,7 +250,7 @@ class SectorFlowScorer:
                         'change_pct': data.get('change_pct', 0),
                     }
 
-        return {'net_inflow': 0, 'net_inflow_pct': 0, 'rank': 0, 'total': total_sectors, 'change_pct': 0}
+        return {'net_inflow': None, 'net_inflow_pct': 0, 'rank': 0, 'total': total_sectors, 'change_pct': 0, 'has_data': False}
 
     def _get_sector_zt_count(self, sector_name: str) -> int:
         """获取板块内涨停家数"""
@@ -277,18 +346,19 @@ class SectorFlowScorer:
         total = sector_flow.get('total', 1)
 
         # === 1. 资金流向 (±25分) ===
-        if net_inflow > 500_000_000:     # 净流入 > 5亿
-            score += 25
-        elif net_inflow > 100_000_000:   # 净流入 > 1亿
-            score += 18
-        elif net_inflow > 0:             # 小幅净流入
-            score += 10
-        elif net_inflow > -100_000_000:  # 小幅净流出
-            score -= 10
-        elif net_inflow > -500_000_000:  # 净流出 > 1亿
-            score -= 18
-        else:                            # 净流出 > 5亿
-            score -= 25
+        if net_inflow is not None:
+            if net_inflow > 500_000_000:     # 净流入 > 5亿
+                score += 25
+            elif net_inflow > 100_000_000:   # 净流入 > 1亿
+                score += 18
+            elif net_inflow > 0:             # 小幅净流入
+                score += 10
+            elif net_inflow > -100_000_000:  # 小幅净流出
+                score -= 10
+            elif net_inflow > -500_000_000:  # 净流出 > 1亿
+                score -= 18
+            else:                            # 净流出 > 5亿
+                score -= 25
 
         # === 2. 排名 (±10分) ===
         if total > 0 and rank > 0:

@@ -30,3 +30,21 @@ stock_screener_results*.csv
 .idea/
 Thumbs.db
 .DS_Store
+
+# PyInstaller build artifacts
+build/
+dist/
+IronTrader.spec
+
+# 账号表与会话签名密钥（不要提交）
+users.json
+.session_secret
+access_keys.json
+
+# 前端依赖与构建缓存（CI 会用 npm ci 重新安装）
+node_modules/
+*.tsbuildinfo
+
+# 本地工具产生的目录
+.workbuddy/
+.codex_artifacts/

@@ -70,7 +70,7 @@ class DecisionMakerEnhanced:
             self._cached_emotion = None
         return self._cached_emotion
 
-    def make_decision(self, code: str) -> Dict:
+    def make_decision(self, code: str, emotion_snapshot: Dict = None) -> Dict:
         """
         对个股做出决策（增强版）
         
@@ -224,7 +224,7 @@ class DecisionMakerEnhanced:
                 'sector_money': sector_money,
                 'chip_quality': chip_quality_result,
                 'arbitrage': []
-            }, market_state)
+            }, market_state, emotion_snapshot=emotion_snapshot)
         else:
             return self._ignore_result(
                 code,
@@ -697,7 +697,12 @@ class DecisionMakerEnhanced:
             return ''
         return f"⚠️ 风控警告: {market_state.get('state', '未知')} - {market_state.get('suggestion', '建议空仓观望')}"
 
-    def _apply_market_gate(self, result: Dict, market_state: Dict) -> Dict:
+    def _apply_market_gate(
+        self,
+        result: Dict,
+        market_state: Dict,
+        emotion_snapshot: Dict = None,
+    ) -> Dict:
         """
         市场风控降级（替代原"空仓态直接IGNORE"的硬拦截）：
         空仓态下个股分析照常完成，BUY 降级为 WATCH，confidence 压至 ≤2，并附加风控警告
@@ -706,7 +711,9 @@ class DecisionMakerEnhanced:
         """
         # === 全局情绪闸（先于市场态警告，使其在可交易态下也生效）===
         try:
-            emotion = self._get_emotion()
+            # 统一研究入口可显式传入请求级情绪快照，确保原始策略证据、
+            # 最终结论和仓位闸来自同一市场时点。其他调用保持原缓存行为。
+            emotion = emotion_snapshot if emotion_snapshot is not None else self._get_emotion()
             if emotion:
                 from market_emotion_filter import PositionManager
                 # 意图单票仓位 = 龙头基准 × 信心系数(confidence/5)，再由情绪单票上限裁剪

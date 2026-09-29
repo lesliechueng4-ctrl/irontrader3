@@ -14,8 +14,20 @@ remain in the root until the project is converted into a package.
 - `scanner_routes.py` - scanner blueprint for wash-pattern and limit-down rebound endpoints.
 - `run_background.py` - Flask runner（被 `start.bat` 调用，host/port 取自 FLASK_HOST/FLASK_PORT）。
 - `requirements.txt` - Python dependencies.
-- `templates/` - Flask templates.
-- `static/` - frontend JavaScript and CSS.
+- `web/dist/` - 构建好的前端（Flask 直接托管，不需要 Node 环境也能运行）。
+
+## Shared infrastructure
+
+- `api_response.py` - 统一响应格式：`ok(data, meta=...)` / `fail(error, status=..., code=...)`。
+- `single_flight_cache.py` - 带 TTL 的单飞缓存，涨停池与今日作战台的响应级缓存都用它。
+- `task_manager.py` - 所有后台任务（扫描、回测）的唯一状态存储（SQLite），测试用
+  `tests/unit/conftest.py` 的临时库隔离。
+- `logger_config.py` - 滚动日志 + 旧版日期日志清理（`LOG_RETENTION_DAYS`）。
+
+## Frontends
+
+- `web/` - 唯一前端（React），见 `web/README.md`。旧版原生 JS 前端（`templates/` + `static/`）已于 2026-09-29 下线，
+  `/legacy` 与 `/v2` 只做 301 跳转。
 
 ## Core data modules
 

@@ -26,6 +26,17 @@ class DataFetcherBoardSupportTest(unittest.TestCase):
         self.assertFalse(self.fetcher._check_limit_up("920001", 20.0))
         self.assertTrue(self.fetcher._check_limit_up("920001", 30.0))
 
+    def test_realtime_snapshot_bypasses_short_ttl_cache(self):
+        fetcher = object.__new__(DataFetcher)
+        quote = {"code": "600001", "name": "甲", "current": 10.0}
+        fetcher.set_stock_realtime_snapshot({"600001": quote}, ttl=60)
+
+        with patch.object(fetcher, "_get_cache") as get_cache:
+            result = fetcher.get_stock_realtime("600001")
+
+        self.assertEqual(result, quote)
+        get_cache.assert_not_called()
+
     @patch.object(DataFetcher, "_get_cache", return_value=None)
     @patch.object(DataFetcher, "_set_cache")
     @patch("data_fetcher.ak.stock_zh_a_hist", side_effect=RuntimeError("hist unavailable"))

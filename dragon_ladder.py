@@ -88,7 +88,7 @@ class DragonLadder:
         self.fetcher = data_fetcher
         self._cache: Optional[Dict[str, object]] = None
         self._cached_at: float = 0.0
-        self.cache_ttl = 120  # 秒
+        self.cache_ttl = 25  # 秒：前端 30 秒刷新时确保重新计算
 
     # ------------------------------------------------------------------
     # ② 分歧 / 一致
@@ -327,7 +327,12 @@ class DragonLadder:
             return {**self._cache, "cached": True}
 
         try:
-            pool = self.fetcher.get_limit_up_pool() or []
+            try:
+                pool = self.fetcher.get_limit_up_pool(force_refresh=force) or []
+            except TypeError as exc:
+                if "force_refresh" not in str(exc):
+                    raise
+                pool = self.fetcher.get_limit_up_pool() or []
         except Exception as exc:
             logger.warning(f"获取涨停池失败: {exc}")
             pool = []

@@ -4,11 +4,12 @@ IronTrader 3.0 统一配置文件
 """
 import os
 from pathlib import Path
+from runtime_paths import application_data_dir
 
 # ==========================================
 # 基础路径配置
 # ==========================================
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = application_data_dir()
 CACHE_DIR = BASE_DIR / "cache"
 OUTPUT_DIR = BASE_DIR / "outputs"
 LOG_DIR = BASE_DIR / "logs"
@@ -34,52 +35,37 @@ class FlaskConfig:
 # 筹码质量分析配置
 # ==========================================
 class ChipQualityConfig:
-    """筹码质量策略配置"""
+    """筹码质量策略配置（实战优化 v2.0 统一规范）"""
     ENABLED = True
 
-    # 参数配置
-    N_LOOKBACK = 5              # 回溯天数
+    # 基础风控与换手率核心参数
+    N_LOOKBACK = 5              # 回溯天数（考察期）
     TURNOVER_MIN = 5.0          # 良性换手下限(%)
     TURNOVER_MAX = 25.0         # 良性换手上限(%)
     TURNOVER_HIGH = 40.0        # 过度换手阈值(%)
-    MAX_AMPLITUDE = 8.0         # 最大振幅(%)
+    MAX_AMPLITUDE = 8.0         # 最大日均振幅(%)
     SHADOW_THRESHOLD = 3.0      # 影线阈值(%)
+    MIN_VOLUME_RATIO = 2.0      # 最小量比
+    VOLUME_BURST_RATIO = 5.0    # 量能爆发倍数（天量涨停判定）
+    HIGH_POS_LIMIT_COUNT = 5    # 高位加速连板数阈值
+    HIGH_POS_AMPLITUDE = 15.0   # 高位加速振幅阈值(%)
 
-    @classmethod
-    def to_dict(cls):
-        """转换为字典格式"""
-        return {
-            'n_lookback': cls.N_LOOKBACK,
-            'turnover_min': cls.TURNOVER_MIN,
-            'turnover_max': cls.TURNOVER_MAX,
-            'turnover_high': cls.TURNOVER_HIGH,
-            'max_amplitude': cls.MAX_AMPLITUDE,
-            'shadow_threshold': cls.SHADOW_THRESHOLD,
-        }
-
-
-class ChipQualityParams:
-    """筹码质量策略 v2.0 详细参数（原 config_chip_quality.py 合并至此）
-
-    经过实战优化的风控/评分参数。集中存放以便统一调整。
-    """
-
-    # 风控过滤参数
+    # 风控过滤字典映射
     RISK_FILTER = {
-        'n_lookback': 5,              # 考察期天数
-        'max_amplitude': 8.0,         # 最大日均振幅(%)
-        'shadow_threshold': 3.0,      # 影线阈值(%)
-        'min_volume_ratio': 2.0,      # 最小量比
-        'volume_burst_ratio': 5.0,    # 量能爆发倍数（天量涨停判定）
-        'high_pos_limit_count': 5,    # 高位加速连板数阈值
-        'high_pos_amplitude': 15.0,   # 高位加速振幅阈值(%)
+        'n_lookback': 5,
+        'max_amplitude': 8.0,
+        'shadow_threshold': 3.0,
+        'min_volume_ratio': 2.0,
+        'volume_burst_ratio': 5.0,
+        'high_pos_limit_count': 5,
+        'high_pos_amplitude': 15.0,
     }
 
-    # 换手率参数（已优化）
+    # 换手率参数字典映射
     TURNOVER_PARAMS = {
-        'min': 5.0,       # 良性换手下限(%)
-        'max': 25.0,      # 良性换手上限(%)
-        'high': 40.0,     # 过度换手阈值(%)
+        'min': 5.0,
+        'max': 25.0,
+        'high': 40.0,
     }
 
     # 评分参数（基于实战优化 v2.0）
@@ -115,9 +101,10 @@ class ChipQualityParams:
         'watch': 0,                   # >0分：观望
     }
 
-    # 20cm板涨停阈值
+    # 涨停阈值
     LIMIT_UP_THRESHOLDS = {
         'normal': 9.5,                # 主板(60/00) 涨停阈值
+        'main': 9.5,                  # 主板兼容标识
         'gem': 19.5,                  # 创业板(300/301) 涨停阈值
         'star': 19.5,                 # 科创板(688) 涨停阈值
         'bse': 29.5,                  # 北交所(8/4) 涨停阈值
@@ -141,6 +128,26 @@ class ChipQualityParams:
             'volume': '成交量', 'amount': '成交额',
         },
     }
+
+    @classmethod
+    def to_dict(cls):
+        """转换为策略可直接使用的配置字典"""
+        return {
+            'n_lookback': cls.N_LOOKBACK,
+            'turnover_min': cls.TURNOVER_MIN,
+            'turnover_max': cls.TURNOVER_MAX,
+            'turnover_high': cls.TURNOVER_HIGH,
+            'max_amplitude': cls.MAX_AMPLITUDE,
+            'shadow_threshold': cls.SHADOW_THRESHOLD,
+            'min_volume_ratio': cls.MIN_VOLUME_RATIO,
+            'volume_burst_ratio': cls.VOLUME_BURST_RATIO,
+            'high_pos_limit_count': cls.HIGH_POS_LIMIT_COUNT,
+            'high_pos_amplitude': cls.HIGH_POS_AMPLITUDE,
+        }
+
+
+# 兼容别名：避免旧代码或文档使用 ChipQualityParams 时报错
+ChipQualityParams = ChipQualityConfig
 
 # ==========================================
 # 数据源配置
@@ -244,6 +251,30 @@ Flask 配置:
 """
 
 # ==========================================
+# 日内分时数据配置
+# ==========================================
+class IntradayDataConfig:
+    """日内分时数据缓存与采集配置"""
+    # 分钟 K 线缓存 TTL（秒）
+    KLINE_TTL_TRADING = 8          # 交易时段：8 秒
+    KLINE_TTL_NON_TRADING = 3600   # 非交易时段：1 小时
+
+    # 盘口数据缓存 TTL（秒）
+    ORDERBOOK_TTL = 5
+
+    # 数据源配置
+    SINA_KLINE_URL = ("https://quotes.sina.cn/cn/api/jsonp_v2.php/"
+                      "var%20_data/CN_MarketData.getKLineData")
+
+    # 请求 Headers
+    HEADERS = {
+        'Referer': 'https://finance.sina.com.cn/',
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                       'AppleWebKit/537.36'),
+    }
+
+
+# ==========================================
 # 导出所有配置类
 # ==========================================
 __all__ = [
@@ -259,5 +290,6 @@ __all__ = [
     'APIConfig',
     'LogConfig',
     'ExternalScriptConfig',
+    'IntradayDataConfig',
     'ENV_HELP',
 ]

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IronTrader 观测台</title>
+    <script>
+      // 首帧先按上次的主题铺好背景，避免 React 启动前闪白（与 ThemeContext 的 key 一致）
+      (function () {
+        var mode = 'dark';
+        try {
+          var saved = localStorage.getItem('irontrader.theme');
+          if (saved === 'light' || saved === 'dark') mode = saved;
+        } catch (e) {}
+        document.documentElement.dataset.theme = mode;
+        document.documentElement.style.colorScheme = mode;
+        document.documentElement.style.background = mode === 'dark' ? '#0f1219' : '#f3f4f7';
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

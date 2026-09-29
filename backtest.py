@@ -125,7 +125,8 @@ class SignalBacktest:
         else:
             try:
                 df = self.fetcher.get_stock_history(code, days=max(min_days, 60))
-            except Exception:
+            except Exception as e:
+                logger.warning(f"回测获取历史行情失败 {code}: {e}")
                 df = None
             self._price_cache[code] = df
         if df is None or df.empty or "close" not in df.columns or "date" not in df.columns:
@@ -135,7 +136,8 @@ class SignalBacktest:
             try:
                 key = pd.to_datetime(r["date"]).strftime("%Y-%m-%d")
                 m[key] = {"open": float(r.get("open", r["close"])), "close": float(r["close"])}
-            except Exception:
+            except Exception as e:
+                logger.debug(f"回测解析行情行失败 {code}: {e}")
                 continue
         return m
 

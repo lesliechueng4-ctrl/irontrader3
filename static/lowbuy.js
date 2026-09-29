@@ -7,20 +7,257 @@
 let currentSentiment = null;
 let currentAnalysis = null;
 let isScanning = false;
+let lowBuyRealtimeTimer = null;
+let didRestoreLowBuyScan = false;
+let todayWorkbenchRequest = 0;
+let todayWorkbenchLoadedAt = 0;
+let missionDetailsUserToggled = false;
+let missionDetailsOpen = false;
+const LOWBUY_REALTIME_INTERVAL = 30000;
+const TODAY_WORKBENCH_CLIENT_TTL = 180000;
 
 // ========== 初始化 ==========
 function initLowBuy() {
+    if (!didRestoreLowBuyScan) {
+        didRestoreLowBuyScan = true;
+        if (!restoreActiveScannerJob()) restoreLastScan();
+    }
+    refreshLowBuyRealtime(false);
+    if (!lowBuyRealtimeTimer) {
+        lowBuyRealtimeTimer = setInterval(() => {
+            const isMainTabActive = document.getElementById('tab-dashboard')?.classList.contains('active') ||
+                                    document.getElementById('tab-scanners')?.classList.contains('active') ||
+                                    document.getElementById('tab-lowbuy')?.classList.contains('active');
+            if (isMainTabActive) {
+                refreshLowBuyRealtime(false);
+            }
+        }, LOWBUY_REALTIME_INTERVAL);
+    }
+}
+
+function refreshLowBuyRealtime(force = false) {
     loadSentiment();
-    loadDragonLadder();
+    loadDragonLadder(force);
+    loadTodayWorkbench(force);
     loadSectors();
+}
+
+// ========== 今日作战台 ===========
+// 这里不改变任何策略结论；只把已有的情绪仓位约束与梯队信号，收束成用户可以先读的行动摘要。
+function scrollToLowBuySection(id) {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function focusLowBuyResearch(code = '') {
+    if (code && /^\d{6}$/.test(String(code))) {
+        if (typeof quickAnalyze === 'function') {
+            quickAnalyze(code);
+            return;
+        }
+    }
+    if (typeof switchTab === 'function') {
+        switchTab('research');
+    }
+    const input = document.getElementById('stockInput') || document.getElementById('lowbuy-code-input');
+    if (input) {
+        if (code && /^\d{6}$/.test(String(code))) input.value = String(code);
+        setTimeout(() => input.focus(), 250);
+    }
+}
+
+function renderTodayMission(sentiment, emotion) {
+    const panel = document.getElementById('mission-panel');
+    if (!panel) return;
+    const existingCandidates = window.latestTodayWorkbenchData;
+    const presentation = buildMoodPresentation(emotion);
+    const defaultDetailsOpen = !window.matchMedia('(max-width: 640px)').matches;
+    // 首次由桌面占位渲染后再切到手机时，不继承桌面的默认展开；只保留用户真实操作过的状态。
+    const detailsOpen = missionDetailsUserToggled
+        ? missionDetailsOpen
+        : defaultDetailsOpen;
+    const canOpen = presentation.canExecute;
+    panel.innerHTML = `
+        <div class="mission-card ${canOpen ? 'mission-open' : 'mission-hold'}">
+            <div class="mission-topline">
+                <div>
+                    <p class="eyebrow">今日作战台</p>
+                    <h2>${escapeHtml(presentation.title)}</h2>
+                </div>
+                <span class="mission-freshness ${presentation.caution ? 'caution' : ''}" title="${escapeHtml(presentation.freshnessText)}">
+                    ${presentation.caution ? '◷' : '●'} ${escapeHtml(presentation.modeLabel)}
+                </span>
+            </div>
+            <div class="mission-status" role="status" aria-live="polite">${escapeHtml(presentation.actionText)} · ${escapeHtml(presentation.note)}</div>
+            <details class="mission-details" ${detailsOpen ? 'open' : ''}>
+                <summary>仓位与数据详情 <span>${presentation.mode === 'review'
+                    ? `${escapeHtml(presentation.actionText)} · 盘中仓位待确认`
+                    : `${escapeHtml(presentation.actionText)} · 总仓≤${presentation.totalText}`}</span></summary>
+                <div class="mission-grid">
+                    <div class="mission-decision">
+                        <span class="mission-label">今日操作</span>
+                        <strong>${escapeHtml(presentation.actionText)}</strong>
+                        <p>${escapeHtml(presentation.note)}</p>
+                    </div>
+                    <div class="mission-limit">
+                        <span class="mission-label">${presentation.mode === 'review' ? '盘中风险上限（参考）' : '风险边界'}</span>
+                        <div><b>总仓 ≤ ${presentation.totalText}</b><b>单票 ≤ ${presentation.singleText}</b></div>
+                        <p>${presentation.mode === 'review' ? '开盘后须重新确认市场、价格与触发条件。' : '分批验证，不因单一信号追高。'}</p>
+                    </div>
+                    <div class="mission-data">
+                        <span class="mission-label">数据状态</span>
+                        <strong>${escapeHtml(presentation.freshnessText)}</strong>
+                        <p>数据时效会直接影响结论的可执行性。</p>
+                    </div>
+                </div>
+            </details>
+            <div class="mission-actions">
+                <button type="button" class="mission-primary" onclick="focusLowBuyResearch()">研究个股</button>
+                <button type="button" class="mission-secondary" onclick="scrollToLowBuySection('sentiment-panel')">查看市场依据</button>
+                <button type="button" class="mission-secondary" onclick="scrollToLowBuySection('candidates-panel')">完整扫描 / 历史</button>
+            </div>
+            <div id="mission-candidates" class="mission-candidates" aria-live="polite">
+                <span class="mission-label">今日候选池</span>
+                <p>正在执行情绪、时效、开仓权限与买点可靠性预检...</p>
+            </div>
+        </div>`;
+    panel.setAttribute('aria-busy', 'false');
+    const candidates = panel.querySelector('#mission-candidates');
+    if (candidates && window.matchMedia('(max-width: 640px)').matches) {
+        const actions = panel.querySelector('.mission-actions');
+        actions?.parentNode.insertBefore(candidates, actions);
+    }
+    const details = panel.querySelector('.mission-details');
+    if (details) details.addEventListener('toggle', () => {
+        missionDetailsUserToggled = true;
+        missionDetailsOpen = details.open;
+    });
+    if (existingCandidates) renderMissionCandidates(existingCandidates);
+}
+
+function renderMissionUnavailable(message = '情绪闸暂不可用') {
+    const panel = document.getElementById('mission-panel');
+    if (!panel) return;
+    const fallback = { execution: null };
+    renderTodayMission(null, fallback);
+    const status = panel.querySelector('.mission-status');
+    if (status) status.textContent = `${message} · 暂不执行 · 仓位上限待确认`;
+    panel.setAttribute('aria-busy', 'false');
+}
+
+async function loadTodayWorkbench(force = false) {
+    if (
+        !force
+        && window.latestTodayWorkbenchData
+        && (Date.now() - todayWorkbenchLoadedAt) < TODAY_WORKBENCH_CLIENT_TTL
+    ) {
+        renderMissionCandidates(window.latestTodayWorkbenchData);
+        return;
+    }
+    const requestId = ++todayWorkbenchRequest;
+    const query = force ? `?refresh=1&_=${Date.now()}` : '';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+    try {
+        const response = await fetch(`/api/today-workbench${query}`, {
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+        const json = await response.json();
+        if (!response.ok || !json.success) throw new Error(json.error || `HTTP ${response.status}`);
+        if (requestId !== todayWorkbenchRequest) return;
+        window.latestTodayWorkbenchData = json.data;
+        todayWorkbenchLoadedAt = Date.now();
+        renderMissionCandidates(json.data);
+    } catch (error) {
+        if (requestId !== todayWorkbenchRequest) return;
+        // 请求失败后不能继续复用旧候选，否则后续情绪卡重绘会把过期结果重新插回页面。
+        window.latestTodayWorkbenchData = null;
+        todayWorkbenchLoadedAt = 0;
+        const message = error?.name === 'AbortError'
+            ? '请求超过 25 秒，已停止等待'
+            : String(error?.message || error || '未知错误');
+        const panel = document.getElementById('mission-candidates');
+        if (panel) panel.innerHTML = `<span class="mission-label">今日候选池</span><p>候选预检暂不可用：${escapeHtml(message)}。可稍后刷新，当前不要据此执行。</p>`;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+function renderMissionCandidateList(items, tier) {
+    if (!items.length) return '<p class="mission-tier-empty">当前没有通过该层预检的标的。</p>';
+    return `<div class="mission-candidate-list ${tier}">${items.map((stock) => {
+        const code = /^\d{6}$/.test(String(stock.code || '')) ? String(stock.code) : '';
+        return `
+        <button type="button" class="mission-candidate" data-stock-code="${code}" ${code ? '' : 'disabled'}>
+            <span class="candidate-rank">${escapeHtml(stock.rank || '')}</span>
+            <span><b>${escapeHtml(stock.name || stock.code || '未知标的')}</b><small>${escapeHtml(stock.sector || '未知题材')} · ${escapeHtml(String(stock.limit_count || 0))}板 · 预检${escapeHtml(stock.precheck_score || 0)}</small></span>
+            <span class="candidate-reason">${escapeHtml((stock.reasons || []).slice(0, 3).join(' · ') || '等待进一步验证')}</span>
+            ${stock.blockers?.length ? `<span class="candidate-blocker">${escapeHtml(stock.blockers[0])}</span>` : ''}
+            <span class="candidate-arrow">完整研究 →</span>
+        </button>`;
+    }).join('')}</div>`;
+}
+
+function renderRiskExcludedList(items) {
+    if (!items.length) return '<p class="mission-tier-empty">本次没有因个股风险被排除的标的。</p>';
+    return `<div class="mission-candidate-list risk-excluded">${items.map((stock) => {
+        const risk = stock.risk_precheck || {};
+        const reason = risk.veto_reason || stock.blockers?.[0] || '触发个股风险否决';
+        return `<div class="mission-candidate mission-risk-card" aria-label="风险排除：${escapeHtml(stock.name || stock.code || '未知标的')}">
+            <span class="candidate-rank">×</span>
+            <span><b>${escapeHtml(stock.name || stock.code || '未知标的')}</b><small>${escapeHtml(stock.sector || '未知题材')} · ${escapeHtml(String(stock.limit_count || 0))}板</small></span>
+            <span class="candidate-reason">个股风险预检已排除</span>
+            <span class="candidate-blocker">${escapeHtml(reason)}</span>
+        </div>`;
+    }).join('')}</div>`;
+}
+
+function renderMissionCandidates(data) {
+    const panel = document.getElementById('mission-candidates');
+    if (!panel) return;
+    const primary = Array.isArray(data?.primary) ? data.primary : [];
+    const watch = Array.isArray(data?.watch) ? data.watch : [];
+    const riskExcluded = Array.isArray(data?.risk_excluded) ? data.risk_excluded : [];
+    const deep = data?.deep_precheck || null;
+    const source = data?.source_summary || {};
+    const warnings = data?.warnings || [];
+    const deepSummary = deep
+        ? `个股深检 ${Number(deep.reviewed || 0)} · 通过 ${Number(deep.passed || 0)} · 排除 ${Number(deep.excluded || 0)} · 异常 ${Number(deep.errors || 0)}`
+        : '个股深检状态待确认';
+    panel.innerHTML = `
+        <div class="mission-candidates-head">
+            <span class="mission-label">第一层 · 优先关注 ${primary.length}/3</span>
+            <span>${escapeHtml(deepSummary)}；仍须进入个股完整研究</span>
+        </div>
+        ${renderMissionCandidateList(primary, 'primary')}
+        <details class="mission-watch-pool">
+            <summary>第二层 · 观察池 ${watch.length}/10 <span>查看降级原因</span></summary>
+            ${renderMissionCandidateList(watch, 'watch')}
+        </details>
+        ${riskExcluded.length ? `<details class="mission-watch-pool mission-risk-pool">
+            <summary>风险排除 ${riskExcluded.length} 只 <span>只读记录，不作为研究入口</span></summary>
+            ${renderRiskExcludedList(riskExcluded)}
+        </details>` : ''}
+        <div class="mission-full-pool">
+            <b>第三层 · 完整扫描 / 历史</b>
+            <span>当前梯队 ${escapeHtml(source.stock_count ?? 0)} 只，预检有效 ${escapeHtml(source.eligible_precheck_count ?? 0)} 只；全市场深度扫描需手动启动。</span>
+            <button type="button" class="mission-secondary" onclick="scrollToLowBuySection('candidates-panel')">查看完整结果与历史</button>
+        </div>
+        ${warnings.length ? `<p class="mission-warning">${escapeHtml(warnings.slice(0, 2).join('；'))}</p>` : ''}`;
+    panel.querySelectorAll('.mission-candidate[data-stock-code]:not([disabled])').forEach((button) => {
+        button.addEventListener('click', () => {
+            const code = String(button.dataset.stockCode || '');
+            if (/^\d{6}$/.test(code)) focusLowBuyResearch(code);
+        });
+    });
 }
 
 // ========== 个股分析 ==========
 async function analyzeLowBuy() {
     const input = document.getElementById('lowbuy-code-input');
     const code = (input ? input.value : '').trim();
-    if (!code) {
-        alert('请输入股票代码');
+    if (!/^\d{6}$/.test(code)) {
+        alert('请输入 6 位股票代码');
         return;
     }
 
@@ -33,43 +270,103 @@ async function analyzeLowBuy() {
         if (json.success) {
             const d = json.data;
             currentAnalysis = d.lowbuy || d;
-            if (d.lowbuy) {
+            if (d.lowbuy?.data_error || d.lowbuy?.error) {
+                panel.innerHTML = `<div class="error-msg">低吸策略证据不可用：${escapeHtml(d.lowbuy.error || d.errors?.lowbuy || '行情数据异常')}。已停止后续评分，不能据此执行。</div>`;
+            } else if (d.lowbuy) {
                 renderAnalysis(d.lowbuy);
             } else {
-                panel.innerHTML = `<div class="error-msg">低吸分析失败: ${d.errors?.lowbuy || '未知错误'}</div>`;
+                panel.innerHTML = `<div class="error-msg">低吸分析失败: ${escapeHtml(d.errors?.lowbuy || '未知错误')}</div>`;
             }
             panel.insertAdjacentHTML('afterbegin', buildDragonCard(d));
+            panel.insertAdjacentHTML('afterbegin', buildFinalConclusionCard(d.final_conclusion));
         } else {
-            panel.innerHTML = `<div class="error-msg">分析失败: ${json.error}</div>`;
+            panel.innerHTML = `<div class="error-msg">分析失败: ${escapeHtml(json.error)}</div>`;
         }
     } catch (e) {
-        panel.innerHTML = `<div class="error-msg">网络错误: ${e.message}</div>`;
+        panel.innerHTML = `<div class="error-msg">网络错误: ${escapeHtml(e.message)}</div>`;
     }
 }
 
-// 龙头战法决策卡片（统一分析入口附带）
+function buildFinalConclusionCard(conclusion) {
+    if (!conclusion) return '';
+    const tone = {
+        EXECUTABLE: 'buy',
+        CONFIRM: 'watch',
+        OBSERVE: 'wait',
+        NOT_APPLICABLE: 'avoid',
+    }[conclusion.status] || 'wait';
+    const strategy = { dragon: '龙头战法', lowbuy: '低吸策略', none: '无适用策略' }[conclusion.primary_strategy] || '综合研究';
+    const blockers = (conclusion.blockers || []).slice(0, 3);
+    const data = conclusion.data || {};
+    const position = conclusion.position || {};
+    const dataStatus = {
+        complete: '完整',
+        partial: '部分可用',
+        unavailable: '不可用',
+    }[data.status] || (data.status || '未知');
+    const freshness = {
+        live: '实时',
+        cached: '缓存',
+        delayed: '延迟',
+        stale: '陈旧',
+        off_session: '非交易时段',
+        unknown: '时效未知',
+    }[data.freshness] || (data.freshness || '时效未知');
+    const asOf = data.as_of ? String(data.as_of).replace('T', ' ').slice(0, 19) : '时间未知';
+    const positionText = (value) => {
+        if (value === null || value === undefined || value === '') return '--';
+        const number = Number(value);
+        return Number.isFinite(number) ? `${Math.round(number * 100)}%` : '--';
+    };
+    return `<section class="final-conclusion ${tone}" aria-label="最终研究结论">
+        <div class="final-conclusion-head">
+            <span class="mission-label">统一最终结论 · ${escapeHtml(strategy)}</span>
+            <strong>${escapeHtml(conclusion.label || '待确认')}</strong>
+        </div>
+        <p>${escapeHtml(conclusion.summary || '')}</p>
+        <div class="final-conclusion-meta">
+            <span>数据 ${escapeHtml(dataStatus)}</span>
+            <span>时效 ${escapeHtml(freshness)}</span>
+            <span>截至 ${escapeHtml(asOf)}</span>
+            <span>开仓 ${position.can_open === true ? '允许' : '禁止'}</span>
+            <span>${position.can_open === true ? '总仓' : '参考总仓'} ≤ ${positionText(position.max_total_position)}</span>
+            <span>${position.can_open === true ? '单票' : '参考单票'} ≤ ${positionText(position.max_single_position)}</span>
+        </div>
+        <div class="final-next-action"><b>下一步：</b>${escapeHtml(conclusion.next_action || '')}</div>
+        ${blockers.length ? `<ul>${blockers.map((item) => `<li>${escapeHtml(item.message || item.code)}</li>`).join('')}</ul>` : ''}
+    </section>`;
+}
+
+// 龙头战法原始证据卡片（最终是否执行只由统一最终结论决定）
 function buildDragonCard(data) {
     const dragon = data.dragon;
     if (!dragon) {
         return data.errors?.dragon
-            ? `<div class="error-msg" style="margin-bottom:12px;">龙头决策失败: ${data.errors.dragon}</div>`
+            ? `<div class="error-msg" style="margin-bottom:12px;">龙头决策失败: ${escapeHtml(data.errors.dragon)}</div>`
             : '';
     }
-    const style = {
-        'BUY': { color: '#4caf50', icon: '🚀', label: '买入' },
-        'WATCH': { color: '#ff9800', icon: '👀', label: '观察' },
-        'IGNORE': { color: '#9e9e9e', icon: '➖', label: '忽略' },
-    }[dragon.decision] || { color: '#9e9e9e', icon: '➖', label: dragon.decision || 'N/A' };
+    const finalExecutable = data.final_conclusion?.status === 'EXECUTABLE';
+    const rawBuyDowngraded = dragon.decision === 'BUY' && !finalExecutable;
+    const style = rawBuyDowngraded
+        ? { color: '#94a3b8', icon: 'ℹ️', label: '原始信号：满足（已被最终结论降级）' }
+        : ({
+            'BUY': { color: '#4caf50', icon: '✓', label: '原始信号：满足' },
+            'WATCH': { color: '#ff9800', icon: '👀', label: '原始信号：等待确认' },
+            'IGNORE': { color: '#9e9e9e', icon: '➖', label: '原始信号：未满足' },
+        }[dragon.decision] || { color: '#9e9e9e', icon: '➖', label: `原始信号：${dragon.decision || 'N/A'}` });
 
     const ms = data.market_state || {};
+    const stateColor = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(String(ms.color || ''))
+        ? String(ms.color)
+        : '#718096';
     const stateBadge = ms.state
-        ? `<span style="background:${ms.color || '#718096'};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;">市场: ${ms.state}</span>`
+        ? `<span style="background:${stateColor};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.8rem;">市场: ${escapeHtml(ms.state)}</span>`
         : '';
     const warnHtml = dragon.risk_warning
-        ? `<div style="color:#ff9800;margin-top:6px;font-size:0.85rem;">${dragon.risk_warning}</div>`
+        ? `<div style="color:#ff9800;margin-top:6px;font-size:0.85rem;">${escapeHtml(dragon.risk_warning)}</div>`
         : '';
     const stars = '⭐'.repeat(Math.max(0, Math.min(5, dragon.confidence || 0)));
-    const reason = (dragon.reason || '').replace(/\n/g, '<br>');
+    const reason = escapeHtml(dragon.reason || '').replace(/\n/g, '<br>');
 
     // 情绪闸：单票上限是情绪区间的全局属性，龙头无 gate(IGNORE 路径)时回退用低吸的
     const eg = dragon.emotion_gate || data.lowbuy?.emotion_gate;
@@ -78,7 +375,7 @@ function buildDragonCard(data) {
     return `
         <div class="lowbuy-section" style="border-left:4px solid ${style.color};padding:12px 16px;margin-bottom:12px;background:rgba(255,255,255,0.04);border-radius:8px;">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                <strong style="color:${style.color};font-size:1.05rem;">${style.icon} 龙头战法: ${style.label}</strong>
+                <strong style="color:${style.color};font-size:1.05rem;">${style.icon} 原始策略证据 · 龙头战法：${escapeHtml(style.label)}</strong>
                 <span style="color:#ccc;">信心 ${stars} (${dragon.confidence || 0}/5)</span>
                 ${stateBadge}
                 ${egHtml}
@@ -96,7 +393,7 @@ function buildEmotionGateChip(eg) {
     const capPct = Math.round((eg.max_single_position || 0) * 100);
     const gatedTip = eg.gated ? ' · 情绪降级' : '';
     const title = `市场情绪【${eg.emotion_level || ''}】得分${eg.emotion_score ?? ''}：单票仓位建议 ≤ ${capPct}%${eg.can_open ? '' : '（禁止开仓）'}`;
-    return `<span class="dragon-eg" title="${title}" style="background:${color}1f;border:1px solid ${color};color:#fff;border-radius:999px;padding:2px 10px;font-size:0.78rem;">🚦 单票≤${capPct}%${gatedTip}</span>`;
+    return `<span class="dragon-eg" title="${escapeHtml(title)}" style="background:${color}1f;border:1px solid ${color};color:#fff;border-radius:999px;padding:2px 10px;font-size:0.78rem;">🚦 单票≤${capPct}%${escapeHtml(gatedTip)}</span>`;
 }
 
 function renderAnalysis(data) {
@@ -121,24 +418,26 @@ function renderAnalysis(data) {
     ];
 
     const vetoHtml = data.veto_triggered
-        ? `<div class="veto-alert">⚠️ 一票否决: ${data.veto_reason}</div>`
+        ? `<div class="veto-alert">⚠️ 一票否决: ${escapeHtml(data.veto_reason)}</div>`
         : '';
+    const totalScore = Number(data.total_score);
+    const safeTotalScore = Number.isFinite(totalScore) ? Math.max(0, Math.min(100, totalScore)) : 0;
 
     panel.innerHTML = `
         <div class="analysis-card">
             <div class="analysis-header">
                 <div class="stock-info">
-                    <span class="stock-code">${data.stock_code}</span>
-                    <span class="stock-name">${data.stock_name}</span>
+                    <span class="stock-code">${escapeHtml(data.stock_code)}</span>
+                    <span class="stock-name">${escapeHtml(data.stock_name)}</span>
                 </div>
                 <div class="decision-badge" style="background: ${ds.color};">
-                    ${ds.icon} ${data.decision}
+                    ${ds.icon} ${escapeHtml(data.decision)}
                 </div>
             </div>
             
             <div class="total-score-bar">
-                <div class="score-fill" style="width: ${data.total_score}%; background: ${ds.color};">
-                    ${data.total_score.toFixed(1)}
+                <div class="score-fill" style="width: ${safeTotalScore}%; background: ${ds.color};">
+                    ${safeTotalScore.toFixed(1)}
                 </div>
             </div>
             ${vetoHtml}
@@ -159,7 +458,7 @@ function renderAnalysis(data) {
             </div>
 
             ${renderDataSourceHealth(data.data_source_health || {})}
-            <div class="analysis-time">分析时间: ${data.timestamp}</div>
+            <div class="analysis-time">分析时间: ${escapeHtml(data.timestamp)}</div>
         </div>
     `;
 
@@ -197,10 +496,11 @@ function renderDataSourceHealth(health) {
         <div class="source-health-row">
             ${entries.map(([key, item]) => {
                 const status = item.status || 'warning';
+                const statusClass = ['healthy', 'warning', 'degraded'].includes(status) ? status : 'warning';
                 const tip = item.last_error
                     ? `${item.last_error}${item.cooldown_remaining_sec ? `，冷却${item.cooldown_remaining_sec}s` : ''}`
                     : '';
-                return `<span class="source-pill ${status}" title="${escapeAttr(tip)}">${labels[key] || key}: ${statusText[status] || status}</span>`;
+                return `<span class="source-pill ${statusClass}" title="${escapeAttr(tip)}">${escapeHtml(labels[key] || key)}: ${escapeHtml(statusText[status] || status)}</span>`;
             }).join('')}
         </div>
     `;
@@ -208,7 +508,7 @@ function renderDataSourceHealth(health) {
 
 function renderDimensionRows(dims) {
     const rows = [
-        { key: 'sentiment', name: '①情绪周期', extra: dims.sentiment?.phase || '' },
+        { key: 'sentiment', name: '①低吸周期', extra: dims.sentiment?.phase || '' },
         { key: 'sector', name: '②板块资金', extra: dims.sector?.status || '' },
         { key: 'fund', name: '③个股资金', extra: dims.fund?.signal || '' },
         { key: 'technical', name: '④技术结构', extra: dims.technical?.ma_alignment || '' },
@@ -227,7 +527,7 @@ function renderDimensionRows(dims) {
                     <div class="dim-bar" style="width: ${score}%; background: ${barColor};"></div>
                 </div>
                 <span class="dim-score">${score}</span>
-                <span class="dim-extra">${r.extra}</span>
+                <span class="dim-extra">${escapeHtml(r.extra)}</span>
             </div>
         `;
     }).join('');
@@ -240,14 +540,14 @@ function renderTechDetail(tech) {
         <div class="detail-section">
             <div class="section-title">📐 技术详情</div>
             <div class="detail-grid">
-                <div class="detail-item"><span class="label">MACD</span><span class="value">${tech.macd_signal || '-'}</span></div>
-                <div class="detail-item"><span class="label">KDJ</span><span class="value">${tech.kdj_signal || '-'}</span></div>
-                <div class="detail-item"><span class="label">量价</span><span class="value">${tech.volume_pattern || '-'}</span></div>
-                <div class="detail-item"><span class="label">支撑位</span><span class="value">${tech.support_level || '-'}</span></div>
-                <div class="detail-item"><span class="label">压力位</span><span class="value">${tech.resistance_level || '-'}</span></div>
-                <div class="detail-item"><span class="label">理想条件</span><span class="value">${tech.ideal_match || 0}/5</span></div>
+                <div class="detail-item"><span class="label">MACD</span><span class="value">${escapeHtml(tech.macd_signal || '-')}</span></div>
+                <div class="detail-item"><span class="label">KDJ</span><span class="value">${escapeHtml(tech.kdj_signal || '-')}</span></div>
+                <div class="detail-item"><span class="label">量价</span><span class="value">${escapeHtml(tech.volume_pattern || '-')}</span></div>
+                <div class="detail-item"><span class="label">支撑位</span><span class="value">${escapeHtml(tech.support_level || '-')}</span></div>
+                <div class="detail-item"><span class="label">压力位</span><span class="value">${escapeHtml(tech.resistance_level || '-')}</span></div>
+                <div class="detail-item"><span class="label">理想条件</span><span class="value">${escapeHtml(tech.ideal_match || 0)}/5</span></div>
             </div>
-            <div class="conditions-text">✓ ${conditions}</div>
+            <div class="conditions-text">✓ ${escapeHtml(conditions)}</div>
         </div>
     `;
 }
@@ -308,10 +608,10 @@ function renderFundFlowDetail(fund) {
             <div class="detail-grid">
                 <div class="detail-item"><span class="label">今日主力</span><span class="value ${flowClass(ff.main_net_inflow_today, hasToday)}">${fmtYi(ff.main_net_inflow_today, hasToday)}</span></div>
                 <div class="detail-item"><span class="label">5日主力</span><span class="value ${flowClass(ff.main_net_inflow_5day, has5Day)}">${fmtYi(ff.main_net_inflow_5day, has5Day)}</span></div>
-                <div class="detail-item"><span class="label">趋势</span><span class="value">${ff.main_net_inflow_trend || '-'}</span></div>
-                <div class="detail-item"><span class="label">信号</span><span class="value">${fund.signal || '-'}</span></div>
-                <div class="detail-item"><span class="label">数据日</span><span class="value">${ff.as_of_date || '--'}</span></div>
-                <div class="detail-item"><span class="label">来源</span><span class="value">${formatSource(ff.source)}</span></div>
+                <div class="detail-item"><span class="label">趋势</span><span class="value">${escapeHtml(ff.main_net_inflow_trend || '-')}</span></div>
+                <div class="detail-item"><span class="label">信号</span><span class="value">${escapeHtml(fund.signal || '-')}</span></div>
+                <div class="detail-item"><span class="label">数据日</span><span class="value">${escapeHtml(ff.as_of_date || '--')}</span></div>
+                <div class="detail-item"><span class="label">来源</span><span class="value">${escapeHtml(formatSource(ff.source))}</span></div>
             </div>
         </div>
     `;
@@ -434,7 +734,7 @@ function renderSectors(sectors) {
                     const barW = Math.min(100, Math.abs(s.net_inflow) / (Math.abs(top[0]?.net_inflow || 1)) * 100);
                     return `<div class="sector-row">
                         <span class="sector-rank">${i + 1}</span>
-                        <span class="sector-name">${s.sector}</span>
+                        <span class="sector-name">${escapeHtml(s.sector)}</span>
                         <div class="sector-bar-wrap"><div class="sector-bar inflow" style="width:${barW}%"></div></div>
                         <span class="sector-val positive">${yi}亿</span>
                     </div>`;
@@ -447,7 +747,7 @@ function renderSectors(sectors) {
                     const barW = Math.min(100, Math.abs(s.net_inflow) / (Math.abs(bottom[0]?.net_inflow || 1)) * 100);
                     return `<div class="sector-row">
                         <span class="sector-rank">${i + 1}</span>
-                        <span class="sector-name">${s.sector}</span>
+                        <span class="sector-name">${escapeHtml(s.sector)}</span>
                         <div class="sector-bar-wrap"><div class="sector-bar outflow" style="width:${barW}%"></div></div>
                         <span class="sector-val negative">${yi}亿</span>
                     </div>`;
@@ -488,24 +788,29 @@ function scanHeroes() {
     runExternalScannerJob(scannerJobOptions('hero_scan'));
 }
 
-function renderHeroes(result) {
-    const panel = document.getElementById('candidates-panel');
+function renderHeroes(result, options = {}) {
+    const panel = options.target || document.getElementById('candidates-panel');
+    const shouldPersist = options.persist !== false;
     const heroes = result.heroes || [];
     const idx = result.index_change || {};
     const marketBadge = {
         '暴跌': '<span class="decision-tag avoid">暴跌日 ✅ 最佳使用场景</span>',
         '调整': '<span class="decision-tag wait">调整日 ⚠️ 信号参考价值中等</span>',
     }[result.market_condition] || '<span class="decision-tag watch">非暴跌日 ℹ️ 信号参考价值有限</span>';
+    const shChange = Number(idx.sh);
+    const szChange = Number(idx.sz);
+    const shText = Number.isFinite(shChange) ? shChange : '-';
+    const szText = Number.isFinite(szChange) ? szChange : '-';
 
     const headerHtml = `
         <div class="candidates-count">
-            🦸 逆势英雄扫描 — 沪指 ${idx.sh ?? '-'}% | 深成指 ${idx.sz ?? '-'}% ${marketBadge}
+            🦸 逆势英雄扫描 — 沪指 ${shText}% | 深成指 ${szText}% ${marketBadge}
         </div>
     `;
 
     if (!heroes.length) {
         panel.innerHTML = headerHtml + '<div class="empty-msg">未发现逆势英雄（无符合条件的逆势强势股）</div>';
-        persistScan('heroes', result);
+        if (shouldPersist) persistScan('heroes', result);
         return;
     }
 
@@ -537,14 +842,22 @@ function renderHeroes(result) {
         </div>
     `;
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: heroes, rowCodeOf: (h) => h.code, exportName: '逆势英雄' });
-    persistScan('heroes', result);
+    if (shouldPersist) persistScan('heroes', result);
 }
 
-function renderCandidates(candidates) {
-    const panel = document.getElementById('candidates-panel');
+function renderCandidates(candidates, meta = {}, options = {}) {
+    const panel = options.target || document.getElementById('candidates-panel');
+    const shouldPersist = options.persist !== false;
     if (!candidates.length) {
-        panel.innerHTML = '<div class="empty-msg">未发现符合条件的低吸候选</div>';
-        persistScan('candidates', candidates);
+        const nearMisses = Array.isArray(meta.near_misses) ? meta.near_misses : [];
+        const topScore = meta.top_score == null ? '--' : Number(meta.top_score).toFixed(1);
+        const nearHtml = nearMisses.length
+            ? `<div class="scanner-meta" style="margin-top:8px">最接近阈值：${nearMisses.map((item) =>
+                `${escapeHtml(item.stock_name || item.stock_code || '')} ${Number(item.total_score || 0).toFixed(1)}分`
+            ).join(' / ')}</div>`
+            : '';
+        panel.innerHTML = `<div class="empty-msg">未发现符合条件的低吸候选（阈值≥${escapeHtml(meta.min_score ?? 55)}，已精评 ${escapeHtml(meta.reviewed ?? 0)} 只，最高 ${escapeHtml(topScore)} 分）</div>${nearHtml}`;
+        if (shouldPersist) persistScan('candidates', { rows: candidates, meta });
         return;
     }
 
@@ -556,7 +869,7 @@ function renderCandidates(candidates) {
         { label: '名称', value: (c) => c.stock_name },
         { label: '综合分', className: 'score-cell', type: 'number', value: (c) => c.total_score, render: (c) => (typeof c.total_score === 'number' ? c.total_score.toFixed(1) : '-') },
         { label: '决策', value: (c) => c.decision, render: (c) => `<span class="decision-tag ${ds[c.decision] || 'avoid'}">${escapeHtml(c.decision || '')}</span>` },
-        { label: '情绪', value: (c) => c.dimensions?.sentiment?.phase || '' },
+        { label: '低吸周期', value: (c) => c.dimensions?.sentiment?.phase || '' },
         { label: '板块', value: (c) => c.dimensions?.sector?.status || '' },
         { label: '资金', value: (c) => c.dimensions?.fund?.signal || '' },
         { label: '技术', value: (c) => c.dimensions?.technical?.ma_alignment || '' },
@@ -567,7 +880,7 @@ function renderCandidates(candidates) {
         <div class="itable-mount"></div>
     `;
     mountInteractiveTable(panel.querySelector('.itable-mount'), { columns, rows: candidates, rowCodeOf: (c) => c.stock_code, exportName: '低吸候选' });
-    persistScan('candidates', candidates);
+    if (shouldPersist) persistScan('candidates', { rows: candidates, meta });
 }
 
 // ===========================================================
@@ -627,27 +940,109 @@ function timeAgo(ts) {
     if (s < 86400) return `${Math.floor(s / 3600)}小时前`;
     return `${Math.floor(s / 86400)}天前`;
 }
+
+function localDateKey(ts) {
+    const value = new Date(Number(ts));
+    if (!Number.isFinite(value.getTime())) return '';
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function normalizedDataDate(value) {
+    const match = String(value || '').match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : '';
+}
+
+function savedScanInfo(saved) {
+    if (saved.kind === 'external') {
+        const payload = saved.payload || {};
+        return {
+            title: payload.title || '完整扫描',
+            count: Array.isArray(payload.rows) ? payload.rows.length : Number(payload.count || 0),
+            dataDate: scannerLatestDataDate(payload.meta || {}, payload.rows || []),
+        };
+    }
+    if (saved.kind === 'heroes') {
+        const payload = saved.payload || {};
+        return {
+            title: '逆势英雄扫描',
+            count: (payload.heroes || []).length,
+            dataDate: normalizedDataDate(payload.data_as_of || payload.data_date || payload.as_of),
+        };
+    }
+    const payload = Array.isArray(saved.payload) ? { rows: saved.payload, meta: {} } : (saved.payload || {});
+    return {
+        title: '全A初筛 · 活跃Top40精评',
+        count: (payload.rows || []).length,
+        dataDate: scannerLatestDataDate(payload.meta || {}, payload.rows || []),
+    };
+}
+
+function renderSavedScan(saved, target) {
+    _restoringScan = true;
+    try {
+        if (saved.kind === 'external') {
+            renderExternalScannerResults({ emptyText: '无结果', ...saved.payload }, { target, persist: false });
+        } else if (saved.kind === 'heroes') {
+            renderHeroes(saved.payload || {}, { target, persist: false });
+        } else if (saved.kind === 'candidates') {
+            const payload = Array.isArray(saved.payload) ? { rows: saved.payload, meta: {} } : (saved.payload || {});
+            renderCandidates(payload.rows || [], payload.meta || {}, { target, persist: false });
+        }
+    } finally {
+        _restoringScan = false;
+    }
+}
+
 function restoreLastScan() {
     let saved;
     try { saved = JSON.parse(localStorage.getItem('irontrader_last_scan')); } catch (e) { return; }
     if (!saved || !saved.kind) return;
     const panel = document.getElementById('candidates-panel');
     if (!panel || panel.children.length) return; // 已有内容则不覆盖
-    _restoringScan = true;
-    try {
-        if (saved.kind === 'external') renderExternalScannerResults({ emptyText: '无结果', ...saved.payload });
-        else if (saved.kind === 'heroes') renderHeroes(saved.payload);
-        else if (saved.kind === 'candidates') renderCandidates(saved.payload || []);
-        else return;
-        const note = document.createElement('div');
-        note.className = 'restored-note';
-        note.innerHTML = `↩ 已恢复上次扫描结果（${timeAgo(saved.ts)}）· <span class="restored-clear">清除</span>`;
-        panel.insertBefore(note, panel.firstChild);
-        note.querySelector('.restored-clear').addEventListener('click', () => {
-            localStorage.removeItem('irontrader_last_scan');
-            panel.innerHTML = '';
-        });
-    } finally { _restoringScan = false; }
+    if (!['external', 'heroes', 'candidates'].includes(saved.kind)) return;
+    const info = savedScanInfo(saved);
+    const savedDay = localDateKey(saved.ts);
+    const today = localDateKey(Date.now());
+    const dataDay = normalizedDataDate(info.dataDate);
+    // 恢复结果只有在数据日明确、且同时匹配保存日与今天时才视为本日有效。
+    // 数据日未知默认按历史处理，避免“今天保存的旧行情”被误标为本日扫描。
+    const isCurrent = Boolean(dataDay && savedDay && dataDay === savedDay && dataDay === today);
+    const staleReason = !dataDay
+        ? '数据日未知，仅供复盘，不进入今日候选。'
+        : (dataDay !== savedDay
+            ? `数据日 ${dataDay} 与保存日 ${savedDay || '未知'} 不一致，仅供复盘。`
+            : `数据日 ${dataDay} 不是今天，仅供复盘，不进入今日候选。`);
+    panel.innerHTML = `<details class="restored-results ${isCurrent ? '' : 'is-stale'}" ${isCurrent ? 'open' : ''}>
+        <summary>
+            <span>${isCurrent ? '本日扫描' : '历史扫描'} · ${escapeHtml(info.title)}</span>
+            <small>${escapeHtml(timeAgo(saved.ts))} · ${escapeHtml(info.count)} 条${dataDay ? ` · 数据日 ${escapeHtml(dataDay)}` : ' · 数据日未知'}</small>
+        </summary>
+        ${isCurrent ? '' : `<p class="restored-warning">${escapeHtml(staleReason)} 展开后再生成完整表格。</p>`}
+        <div class="restored-results-body"></div>
+        <div class="restored-actions">
+            <button type="button" class="restored-clear">清除历史</button>
+            <button type="button" class="restored-rescan" onclick="document.querySelector('.opportunity-tools')?.setAttribute('open',''); scrollToLowBuySection('scan-btn')">打开扫描工具</button>
+        </div>
+    </details>`;
+    const details = panel.querySelector('.restored-results');
+    const body = details.querySelector('.restored-results-body');
+    details.addEventListener('toggle', () => {
+        if (details.open && !body.dataset.mounted) {
+            body.dataset.mounted = 'true';
+            renderSavedScan(saved, body);
+        }
+    });
+    if (isCurrent) {
+        body.dataset.mounted = 'true';
+        renderSavedScan(saved, body);
+    }
+    details.querySelector('.restored-clear').addEventListener('click', () => {
+        localStorage.removeItem('irontrader_last_scan');
+        panel.innerHTML = '';
+    });
 }
 
 // ===========================================================
@@ -674,9 +1069,9 @@ function setupCodeAutocomplete() {
         box.style.width = `${input.offsetWidth}px`;
     }
     function show(list) {
-        items = list;
-        if (!list.length) { hide(); return; }
-        box.innerHTML = list.map((it) => `<div class="cs-item" data-code="${escapeHtml(it.code)}"><span class="cs-code">${escapeHtml(it.code)}</span><span class="cs-name">${escapeHtml(it.name)}</span></div>`).join('');
+        items = list.filter((it) => /^\d{6}$/.test(String(it.code || '')));
+        if (!items.length) { hide(); return; }
+        box.innerHTML = items.map((it) => `<div class="cs-item" data-code="${String(it.code)}"><span class="cs-code">${String(it.code)}</span><span class="cs-name">${escapeHtml(it.name)}</span></div>`).join('');
         place();
         box.style.display = 'block';
         active = -1;
@@ -720,10 +1115,12 @@ function scannerLatestDataDate(meta, rows) {
     const prepared = meta?.data_prepare || {};
     const direct = meta?.latest_data_date
         || meta?.data_date
+        || meta?.data_as_of
         || meta?.as_of_date
         || prepared.latest_data_date
         || prepared.latest_quote_date
         || prepared.data_date
+        || prepared.data_as_of
         || prepared.as_of_date;
     if (direct) return String(direct).slice(0, 10);
 
@@ -794,13 +1191,14 @@ function scannerResultMeta({ rows, count, elapsed, meta }) {
     };
 }
 
-function renderExternalScannerResults({ title, columns, rows, count, elapsed, output, meta, emptyText }) {
-    const panel = document.getElementById('candidates-panel');
+function renderExternalScannerResults({ title, columns, rows, count, elapsed, output, meta, emptyText }, options = {}) {
+    const panel = options.target || document.getElementById('candidates-panel');
+    const shouldPersist = options.persist !== false;
     rows = Array.isArray(rows) ? rows : [];
     meta = meta || {};
     const resultMeta = scannerResultMeta({ rows, count, elapsed, meta });
     // 空结果也必须覆盖上一次扫描，否则刷新后会错误恢复旧的非空结果。
-    persistScan('external', { title, columns, rows, count, elapsed, output, meta });
+    if (shouldPersist) persistScan('external', { title, columns, rows, count, elapsed, output, meta });
     if (!rows.length) {
         const warning = resultMeta.dataErrors > 0 || resultMeta.logicErrors > 0
             || resultMeta.staleFallback > 0
@@ -842,11 +1240,15 @@ function renderExternalScannerResults({ title, columns, rows, count, elapsed, ou
 }
 
 function analyzeLowBuyByCode(code) {
-    const input = document.getElementById('lowbuy-code-input');
-    if (input) input.value = code;
+    if (!/^\d{6}$/.test(String(code || ''))) return;
+    if (typeof quickAnalyze === 'function') {
+        quickAnalyze(code);
+        return;
+    }
+    const input = document.getElementById('stockInput') || document.getElementById('lowbuy-code-input');
+    if (input) input.value = String(code);
+    if (typeof switchTab === 'function') switchTab('research');
     analyzeLowBuy();
-    // 滚动到分析面板
-    document.getElementById('analysis-panel')?.scrollIntoView({ behavior: 'smooth' });
 }
 
 // 回车键触发分析
@@ -860,5 +1262,4 @@ document.addEventListener('DOMContentLoaded', () => {
     setupCodeAutocomplete();
     setupScanSettings();
     updateWatchlistBtn();
-    if (!restoreActiveScannerJob()) restoreLastScan();
 });

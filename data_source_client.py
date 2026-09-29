@@ -15,6 +15,9 @@ import time
 import requests
 
 
+from requests.adapters import HTTPAdapter
+
+
 @dataclass
 class SourceResult:
     source: str
@@ -102,9 +105,18 @@ class DataSourceClient:
         },
     }
 
-    def __init__(self):
+    def __init__(self, session: Optional[requests.Session] = None):
         self._lock = threading.Lock()
         self._state: Dict[str, Dict] = {}
+        if session is not None:
+            self.session = session
+        else:
+            self.session = requests.Session()
+            # 彻底禁用系统/注册表/环境变量代理，仅作用于此 Session 实例，避免进程级污染
+            self.session.trust_env = False
+            adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
 
     def get(
         self,
@@ -139,12 +151,11 @@ class DataSourceClient:
             self._throttle(source, min_interval)
             started = time.time()
             try:
-                resp = requests.get(
+                resp = self.session.get(
                     url,
                     params=params,
                     headers=headers,
                     timeout=timeout,
-                    proxies={"http": None, "https": None},
                 )
                 elapsed_ms = (time.time() - started) * 1000
                 last_status = resp.status_code
@@ -230,12 +241,19 @@ class DataSourceClient:
         if min_interval <= 0:
             return
 
+        # 先在锁内“预约”下一次请求时间，再在锁外 sleep，
+        # 避免限流等待期间阻塞其他线程读取/写入任意 source 的状态。
         with self._lock:
             state = self._state_for(source)
-            wait = min_interval - (time.time() - state.get("last_request_at", 0))
+            now = time.time()
+            wait = min_interval - (now - state.get("last_request_at", 0))
             if wait > 0:
-                time.sleep(wait)
-            state["last_request_at"] = time.time()
+                state["last_request_at"] = now + wait
+            else:
+                state["last_request_at"] = now
+                wait = 0
+        if wait > 0:
+            time.sleep(wait)
 
     def _record_success(self, source: str, elapsed_ms: float):
         with self._lock:

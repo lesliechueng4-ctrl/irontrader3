@@ -20,10 +20,10 @@ from pathlib import Path
 import pandas as pd
 import pickle
 import re
-import requests
-import time
 
 from logger_config import get_logger
+from runtime_paths import application_data_dir
+from sina_spot_client import SinaSpotClient
 logger = get_logger(__name__)
 
 
@@ -32,41 +32,27 @@ class CounterTrendHeroScanner:
 
     def __init__(self, data_fetcher: DataFetcher = None):
         self.fetcher = data_fetcher or DataFetcher()
-        self.cache_dir = Path(__file__).parent / "cache"
+        self.cache_dir = application_data_dir() / "cache"
         self.cache_dir.mkdir(exist_ok=True)
+        self._sina_spot_client = None  # 懒加载，见 _fetch_sina_market_spot
 
     def _get_cache_path(self, cache_key: str) -> Path:
         """获取缓存文件路径"""
         return self.cache_dir / f"hero_{cache_key}.pkl"
 
     def _load_from_cache(self, cache_key: str, max_age_minutes: int = 30) -> Optional[pd.DataFrame]:
-        """从缓存加载数据"""
-        cache_file = self._get_cache_path(cache_key)
-        if not cache_file.exists():
-            return None
-
-        try:
-            # 检查缓存年龄
-            cache_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if cache_age > timedelta(minutes=max_age_minutes):
-                logger.info(f"   [INFO] 缓存已过期（{int(cache_age.total_seconds() / 60)} 分钟前）")
-                return None
-
-            with open(cache_file, 'rb') as f:
-                data = pickle.load(f)
-                logger.info(f"   [OK] 从缓存加载数据（{int(cache_age.total_seconds() / 60)} 分钟前）")
-                return data
-        except Exception as e:
-            logger.warning(f"   [WARN] 缓存加载失败: {e}")
-            return None
+        """从缓存加载数据（统一走 CacheManager 并享受 HMAC 签名防护）"""
+        data = self.fetcher.cache_manager.get(f"hero_{cache_key}")
+        if data is not None:
+            logger.info(f"   [OK] 从签名缓存加载数据: hero_{cache_key}")
+            return data
+        return None
 
     def _save_to_cache(self, cache_key: str, data: pd.DataFrame):
-        """保存数据到缓存"""
+        """保存数据到缓存（统一走 CacheManager）"""
         try:
-            cache_file = self._get_cache_path(cache_key)
-            with open(cache_file, 'wb') as f:
-                pickle.dump(data, f)
-            logger.info(f"   [OK] 数据已缓存")
+            self.fetcher.cache_manager.set(f"hero_{cache_key}", data)
+            logger.info(f"   [OK] 数据已写入签名缓存: hero_{cache_key}")
         except Exception as e:
             logger.warning(f"   [WARN] 缓存保存失败: {e}")
 
@@ -110,7 +96,8 @@ class CounterTrendHeroScanner:
                         metrics['volume_ratio'] = current_volume / avg5
 
                 return metrics
-            except Exception:
+            except Exception as e:
+                logger.warning(f"获取股票指标失败 {code}: {e}")
                 return metrics
 
         result: Dict[str, Dict[str, Optional[float]]] = {}
@@ -123,7 +110,8 @@ class CounterTrendHeroScanner:
                 code = futures[future]
                 try:
                     result[code] = future.result()
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"获取指标任务异常 {code}: {e}")
                     result[code] = {'prior_change': None, 'volume_ratio': None}
         return result
 
@@ -196,76 +184,21 @@ class CounterTrendHeroScanner:
         return changes
 
     def _fetch_sina_market_spot(self) -> pd.DataFrame:
-        """Fetch full A-share realtime quotes from Sina with turnover ratio."""
-        rows = []
-        headers = {
-            'Referer': 'http://finance.sina.com.cn',
-            'User-Agent': 'Mozilla/5.0',
-        }
-        base_url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
-        # Sina accepts num=200 but currently returns at most 100 records per page.
-        page_size = 100
+        """Fetch full A-share realtime quotes from Sina with turnover ratio.
 
-        for node in ("hs_a",):
-            count_url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
-            count_resp = requests.get(
-                count_url,
-                params={"node": node},
-                headers=headers,
-                timeout=15,
-                proxies={"http": None, "https": None},
+        统一走 SinaSpotClient（共享 DataFetcher 的限流/熔断状态，分页并发），
+        列裁剪为原有契约并补固定量比 1.0。
+        """
+        if self._sina_spot_client is None:
+            self._sina_spot_client = SinaSpotClient(
+                source_client=self.fetcher.source_client
             )
-            count_resp.raise_for_status()
-            total = int(count_resp.text.strip().strip('"'))
-            pages = (total + page_size - 1) // page_size
-
-            for page in range(1, pages + 1):
-                params = {
-                    "page": page,
-                    "num": page_size,
-                    "sort": "symbol",
-                    "asc": 1,
-                    "node": node,
-                    "symbol": "",
-                    "_s_r_a": "page",
-                }
-                result = self.fetcher.source_client.get(
-                    "sina",
-                    base_url,
-                    params=params,
-                    headers=headers,
-                    timeout=15,
-                    retries=2,
-                    min_interval=0.02,
-                    allow_when_open=True,
-                )
-                if not result.ok:
-                    raise RuntimeError(result.error or "新浪行情分页接口失败")
-
-                items = result.response.json()
-                for item in items or []:
-                    code = str(item.get('code') or '').zfill(6)
-                    current = self._safe_float(item.get('trade'))
-                    if len(code) != 6 or current <= 0:
-                        continue
-                    rows.append({
-                        '代码': code,
-                        '名称': str(item.get('name') or '').strip(),
-                        '最新价': current,
-                        '涨跌幅': self._safe_float(item.get('changepercent')),
-                        '换手率': self._safe_float(item.get('turnoverratio')),
-                        '量比': 1.0,
-                        '成交量': self._safe_float(item.get('volume')),
-                        '成交额': self._safe_float(item.get('amount')),
-                    })
-
-                time.sleep(0.02)
-
-        if not rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(rows).drop_duplicates(subset=['代码'], keep='first')
-        return df.reset_index(drop=True)
+        df = self._sina_spot_client.fetch_spot_frame(node="hs_a")
+        if df.empty:
+            return df
+        df = df[['代码', '名称', '最新价', '涨跌幅', '换手率', '成交量', '成交额']].copy()
+        df.insert(5, '量比', 1.0)
+        return df
 
     def scan(
         self,

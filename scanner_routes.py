@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Lock, Thread
 from uuid import uuid4
 import csv
+import importlib
 import importlib.util
 import math
 import os
@@ -15,17 +16,24 @@ import traceback
 import pandas as pd
 from flask import Blueprint, jsonify, request
 
+from api_response import fail, ok
+from logger_config import get_logger
+from runtime_paths import application_data_dir, application_resource_dir
+from task_manager import default_task_manager
+
+logger = get_logger(__name__)
 
 scanner_bp = Blueprint("scanners", __name__)
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = application_resource_dir()
 
 
 def _scanner_output_dir():
     output_dir = os.environ.get("SCANNER_OUTPUT_DIR")
     if output_dir:
         return Path(output_dir).expanduser()
-    return BASE_DIR / "outputs" / "scanners"
+    base_dir = application_data_dir() if getattr(sys, "frozen", False) else BASE_DIR
+    return base_dir / "outputs" / "scanners"
 
 
 def _scanner_output_path(prefix):
@@ -75,10 +83,9 @@ _EXTERNAL_SCAN_LOCKS = {
     "wash_pattern": _HEAVY_SCANNER_LOCK,
     "limit_down_rebound": _HEAVY_SCANNER_LOCK,
 }
-_SCAN_JOBS = {}
-_SCAN_JOBS_LOCK = Lock()
-_SCAN_JOB_RETENTION_SEC = 60 * 60
-_MAX_SCAN_JOBS = 30
+# 扫描任务状态统一存放在 TaskManager（SQLite），进程重启后仍可查询；
+# 测试可把 _tasks 换成指向临时数据库的 TaskManager。
+_tasks = default_task_manager
 
 
 class _ScanBusyError(RuntimeError):
@@ -89,119 +96,58 @@ class _ScanCancelledError(RuntimeError):
     pass
 
 
-def _cleanup_scan_jobs_locked():
-    now = time.time()
-    expired_ids = [
-        job_id
-        for job_id, job in _SCAN_JOBS.items()
-        if job.get("status") in {"completed", "failed", "cancelled", "canceled"}
-        and now - float(job.get("finished_at") or now) > _SCAN_JOB_RETENTION_SEC
-    ]
-    for job_id in expired_ids:
-        _SCAN_JOBS.pop(job_id, None)
-
-    if len(_SCAN_JOBS) <= _MAX_SCAN_JOBS:
-        return
-
-    finished_jobs = sorted(
-        (
-            (float(job.get("finished_at") or job.get("started_at") or 0), job_id)
-            for job_id, job in _SCAN_JOBS.items()
-            if job.get("status") in {"completed", "failed", "cancelled", "canceled"}
-        )
-    )
-    for _, job_id in finished_jobs[: max(0, len(_SCAN_JOBS) - _MAX_SCAN_JOBS)]:
-        _SCAN_JOBS.pop(job_id, None)
-
-
-def _job_snapshot(job):
-    snapshot = dict(job)
-    started_at = float(snapshot.get("started_at") or 0)
-    finished_at = snapshot.get("finished_at")
-    end_time = float(finished_at) if finished_at else time.time()
-    snapshot["elapsed_sec"] = round(max(0, end_time - started_at), 1) if started_at else 0
-
-    total = int(snapshot.get("total") or 0)
-    done = int(snapshot.get("done") or 0)
-    if total > 0:
-        snapshot["percent"] = round(min(100, max(0, done / total * 100)), 1)
-    elif snapshot.get("status") == "completed":
-        snapshot["percent"] = 100
-    else:
-        snapshot["percent"] = float(snapshot.get("percent") or 0)
-    return snapshot
+def _started_by():
+    try:
+        from auth import current_user
+        return (current_user() or {}).get("name") or ""
+    except Exception:  # 没有请求上下文（后台线程、测试）
+        return ""
 
 
 def _create_scan_job(kind, params=None, cancel_supported=False):
-    now = time.time()
-    job_id = uuid4().hex
-    job = {
-        "id": job_id,
-        "kind": kind,
-        "params": dict(params or {}),
-        "cancel_supported": bool(cancel_supported),
-        "status": "queued",
-        "phase": "排队中",
-        "message": "等待启动筛选任务...",
-        "done": 0,
-        "total": 0,
-        "percent": 0,
-        "matched": 0,
-        "errors": 0,
-        "started_at": now,
-        "started_at_text": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
-        "finished_at": None,
-        "elapsed_sec": 0,
-        "result": None,
-        "error": "",
-        "cancel_requested": False,
-    }
-    with _SCAN_JOBS_LOCK:
-        _cleanup_scan_jobs_locked()
-        _SCAN_JOBS[job_id] = job
-    return _job_snapshot(job)
+    params = dict(params or {})
+    started_by = _started_by()
+    if started_by:
+        params["_started_by"] = started_by  # 谁启动的：普通成员只能停止自己启动的扫描
+    return _tasks.create_task(
+        kind=kind,
+        params=params,
+        cancel_supported=bool(cancel_supported),
+        status="queued",
+        phase="排队中",
+        message="等待启动筛选任务...",
+    )
 
 
 def _update_scan_job(job_id, **updates):
     if not job_id:
         return None
-    with _SCAN_JOBS_LOCK:
-        job = _SCAN_JOBS.get(job_id)
-        if not job:
-            return None
-        job.update(updates)
-        return _job_snapshot(job)
+    return _tasks.update_task(job_id, **updates)
 
 
 def _get_scan_job(job_id):
-    with _SCAN_JOBS_LOCK:
-        job = _SCAN_JOBS.get(job_id)
-        if not job:
-            return None
-        return _job_snapshot(job)
+    return _tasks.get_task(job_id)
 
 
 def _get_active_scan_job(kind=None):
-    with _SCAN_JOBS_LOCK:
-        active = [
-            job
-            for job in _SCAN_JOBS.values()
-            if job.get("status") in {"queued", "running", "cancelling"}
-            and (kind is None or job.get("kind") == kind)
-        ]
-        if not active:
-            return None
-        return _job_snapshot(max(active, key=lambda item: item.get("started_at") or 0))
+    return _tasks.get_active_task(kind=kind)
 
 
 def _scan_cancel_requested(job_id):
-    with _SCAN_JOBS_LOCK:
-        job = _SCAN_JOBS.get(job_id)
-        return bool(job and job.get("cancel_requested"))
+    return _tasks.is_cancel_requested(job_id)
 
 
 def _load_external_module(name, path):
     """Load an external scanner script once and keep dataclasses happy."""
+    bundled_modules = {
+        "wash_pattern": "wash_pattern_scanner",
+        "limit_down_rebound": "stock_screener_2",
+    }
+    if getattr(sys, "frozen", False) and not os.environ.get(
+        "WASH_PATTERN_SCANNER_PATH" if name == "wash_pattern" else "A_STOCK_SCREENER_PATH"
+    ):
+        return importlib.import_module(bundled_modules[name])
+
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"External scanner not found: {path}")
@@ -1269,12 +1215,7 @@ def wash_pattern_scan():
     lock = _EXTERNAL_SCAN_LOCKS["wash_pattern"]
     if not lock.acquire(blocking=False):
         active_job = _get_active_scan_job(job_kind)
-        return jsonify({
-            "success": False,
-            "error": "洗盘形态扫描正在运行，请稍后再试",
-            "job_id": active_job.get("id") if active_job else "",
-            "job": active_job,
-        }), 409
+        return fail("洗盘形态扫描正在运行，请稍后再试", status=409, code="SCAN_BUSY", job_id=active_job.get("id") if active_job else "", job=active_job)
 
     try:
         return jsonify(_run_wash_pattern_scan(params))
@@ -1361,12 +1302,7 @@ def wash_pattern_scan_start():
     lock = _EXTERNAL_SCAN_LOCKS["wash_pattern"]
     if not lock.acquire(blocking=False):
         active_job = _get_active_scan_job(job_kind)
-        return jsonify({
-            "success": False,
-            "error": "洗盘形态扫描正在运行，请稍后再试",
-            "job_id": active_job.get("id") if active_job else "",
-            "job": active_job,
-        }), 409
+        return fail("洗盘形态扫描正在运行，请稍后再试", status=409, code="SCAN_BUSY", job_id=active_job.get("id") if active_job else "", job=active_job)
 
     try:
         job = _create_scan_job(
@@ -1380,7 +1316,7 @@ def wash_pattern_scan_start():
             daemon=True,
         )
         thread.start()
-        return jsonify({"success": True, "job_id": job["id"], "job": job})
+        return ok(job)
     except Exception:
         lock.release()
         raise
@@ -1488,12 +1424,7 @@ def limit_down_rebound_scan_start():
     lock = _EXTERNAL_SCAN_LOCKS["limit_down_rebound"]
     if not lock.acquire(blocking=False):
         active_job = _get_active_scan_job("limit_down_rebound")
-        return jsonify({
-            "success": False,
-            "error": "A股条件筛选正在运行，请稍后再试",
-            "job_id": active_job.get("id") if active_job else "",
-            "job": active_job,
-        }), 409
+        return fail("A股条件筛选正在运行，请稍后再试", status=409, code="SCAN_BUSY", job_id=active_job.get("id") if active_job else "", job=active_job)
 
     try:
         params = {
@@ -1514,50 +1445,69 @@ def limit_down_rebound_scan_start():
             daemon=True,
         )
         thread.start()
-        return jsonify({"success": True, "job_id": job["id"], "job": job})
+        return ok(job)
     except Exception:
         lock.release()
         raise
 
 
+class _CancelForbidden(Exception):
+    pass
+
+
 def _request_scan_cancel(job_id):
-    with _SCAN_JOBS_LOCK:
-        job = _SCAN_JOBS.get(job_id)
-        if not job:
-            return None
-        if job.get("status") not in {"completed", "failed", "cancelled", "canceled"}:
-            job.update({
-                "cancel_requested": True,
-                "status": "cancelling",
-                "phase": "取消中",
-                "message": "正在停止尚未执行的扫描任务...",
-            })
-        return _job_snapshot(job)
+    """已结束的任务原样返回；进行中的任务标记取消，由执行线程在下一个检查点退出。"""
+    task = _tasks.get_task(job_id)
+    if task is None:
+        return None
+    from auth import audit, current_user, is_owner
+    user = current_user()
+    started_by = (task.get("params") or {}).get("_started_by")
+    if user and not is_owner() and started_by and started_by != user.get("name"):
+        raise _CancelForbidden(started_by)
+    audit("scan_cancel", job=job_id, kind=task.get("kind"))
+    _tasks.request_cancel(
+        job_id,
+        require_supported=False,
+        message="正在停止尚未执行的扫描任务...",
+    )
+    return _tasks.get_task(job_id)
 
 
 @scanner_bp.route("/api/scanners/jobs/current", methods=["GET"])
 def scanner_current_job():
     kind = request.args.get("kind") or None
     job = _get_active_scan_job(kind)
-    return jsonify({"success": True, "job": job})
+    return ok(job)
+
+
+def _cancel_or_forbid(job_id):
+    try:
+        return _request_scan_cancel(job_id), None
+    except _CancelForbidden as exc:
+        return None, fail(f"这次扫描是 {exc} 启动的，只有他本人或管理员可以停止", status=403, code="NOT_YOUR_JOB")
 
 
 @scanner_bp.route("/api/scanners/jobs/<job_id>/cancel", methods=["POST"])
 def scanner_job_cancel(job_id):
-    job = _request_scan_cancel(job_id)
+    job, denied = _cancel_or_forbid(job_id)
+    if denied:
+        return denied
     if not job:
-        return jsonify({"success": False, "error": "扫描任务不存在或已过期"}), 404
-    return jsonify({"success": True, "job": job})
+        return fail("扫描任务不存在或已过期", status=404, code="JOB_NOT_FOUND")
+    return ok(job)
 
 
 @scanner_bp.route("/api/scanners/jobs/<job_id>", methods=["GET", "DELETE"])
 def scanner_job_status(job_id):
     if request.method == "DELETE":
-        job = _request_scan_cancel(job_id)
+        job, denied = _cancel_or_forbid(job_id)
+        if denied:
+            return denied
         if not job:
-            return jsonify({"success": False, "error": "扫描任务不存在或已过期"}), 404
-        return jsonify({"success": True, "job": job})
+            return fail("扫描任务不存在或已过期", status=404, code="JOB_NOT_FOUND")
+        return ok(job)
     job = _get_scan_job(job_id)
     if not job:
-        return jsonify({"success": False, "error": "扫描任务不存在或已过期"}), 404
-    return jsonify({"success": True, "job": job})
+        return fail("扫描任务不存在或已过期", status=404, code="JOB_NOT_FOUND")
+    return ok(job)

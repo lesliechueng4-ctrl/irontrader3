@@ -1,40 +1,42 @@
 # IronTrader 3.0 Integrated System
 # Merged features from IronTrader (Rule-based) and IronTrader2 (AI-based)
 
-from flask import Flask, jsonify, request, render_template
-from scanner_routes import (
-    scanner_bp,
-    _create_scan_job,
-    _get_active_scan_job,
-    _get_scan_job,
-    _scan_cancel_requested,
-    _update_scan_job,
-)
-from threading import Lock, Thread
-from logger_config import get_logger
-from config import FlaskConfig, ChipQualityConfig, APIConfig
-from exceptions import register_error_handlers, ValidationError, raise_if_invalid_stock_code
-from constants import APILimitConstants
 import os
-import time
-import hmac
+from flask import Flask
 
+from auth import init_auth
+from backtest_routes import backtest_bp
+from config import ChipQualityConfig, FlaskConfig
+from decision_maker_enhanced import DecisionMakerEnhanced
+from exceptions import register_error_handlers
+from hero_routes import hero_bp, init_hero_routes
+from intraday_routes import init_intraday_routes, intraday_bp
+from logger_config import cleanup_legacy_logs, get_logger
+from lowbuy_routes import _get_low_buy_engine, init_lowbuy_routes, lowbuy_bp
+from market_routes import init_market_routes, market_bp
+from rate_limit import init_rate_limit
+from runtime_paths import application_data_dir, application_resource_dir
+from scanner_routes import scanner_bp
 
-def _safe_error_text(value):
-    return str(value).encode('gbk', errors='replace').decode('gbk')
+# 各蓝图的内部状态（缓存、锁、任务表）留在各自模块里；测试直接 patch 对应模块，
+# 不再经由 app 模块转发。
 
-# 初始化日志
 logger = get_logger(__name__)
 
 # Initialize Flask
-app = Flask(__name__, static_folder='static', template_folder='templates')
+_RESOURCE_DIR = application_resource_dir()
+app = Flask(
+    __name__,
+    static_folder=None,  # 前端全部由 web/dist 提供（见下方"前端路由"）
+)
 app.config.from_object(FlaskConfig)
+# JSON 响应直接输出中文（默认会转成 \uXXXX，错误信息在浏览器里不可读）
+app.json.ensure_ascii = False
 
-# 静态资源长缓存（JS/CSS 均带 ?v=版本号，更新时改版本即可，浏览器/手机可放心缓存 7 天）
+# 静态资源长缓存（7天）
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 7 * 24 * 3600
 
-# 启用 gzip 压缩（如果已安装 flask-compress）：
-# lowbuy.js(~66KB)+styles.css(~39KB) 等文本资源压缩后约缩小 70%，显著加快手机/弱网首屏。
+# 启用 gzip 压缩（如果已安装 flask-compress）
 try:
     from flask_compress import Compress
     Compress(app)
@@ -46,15 +48,16 @@ except ImportError:
 register_error_handlers(app)
 
 # 配置 CORS（如果已安装 flask-cors）
-# 安全默认：仅允许通过 CORS_ALLOWED_ORIGINS（逗号分隔）显式列出的来源。
-# 未设置时回退到本地开发地址，而不是对所有来源开放（避免跨站滥用 API）。
 try:
     from flask_cors import CORS
     _cors_origins_env = os.getenv('CORS_ALLOWED_ORIGINS', '').strip()
     if _cors_origins_env:
         _cors_origins = [o.strip() for o in _cors_origins_env.split(',') if o.strip()]
     else:
-        _cors_origins = ["http://localhost:5002", "http://127.0.0.1:5002"]
+        _cors_origins = [
+            "http://localhost:5002", "http://127.0.0.1:5002",
+            "http://localhost:5173", "http://127.0.0.1:5173",  # Vite dev server
+        ]
     CORS(app, resources={
         r"/api/*": {
             "origins": _cors_origins,
@@ -66,767 +69,177 @@ try:
 except ImportError:
     logger.warning("Flask-CORS not installed, CORS not enabled. Install: pip install flask-cors")
 
-app.register_blueprint(scanner_bp)
+# 经 Cloudflare 隧道访问时，原始协议在 X-Forwarded-Proto 里：据此识别 https，登录 cookie 才会带 Secure
+from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
 
-# 决策引擎：仅保留增强版（旧版 decision_maker 已退役，避免两套逻辑漂移）。
-# 初始化失败直接抛出——引擎不可用时整个应用无意义，宁可启动即报错。
-from decision_maker_enhanced import DecisionMakerEnhanced
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+# 访问控制（账号密码 + 角色）与按用户限流；账号在网页「账号管理」里维护（存于 users.json）
+init_auth(app, users_file=application_data_dir() / 'users.json')
+init_rate_limit(app)
+
+
+@app.after_request
+def _security_headers(resp):
+    """基础安全响应头：禁止被别的网站嵌入、禁止 MIME 嗅探、不外泄来源地址。"""
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'same-origin')
+    resp.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    # 接口数据每人各自拉取，不让 Cloudflare / 浏览器共享缓存（避免 A 的响应被 B 命中）
+    from flask import request as _req
+    if _req.path.startswith('/api/'):
+        resp.headers.setdefault('Cache-Control', 'private, no-store')
+    return resp
+
+# 决策引擎与数据获取器单例初始化
 decision_maker = DecisionMakerEnhanced(
     enable_chip_quality=ChipQualityConfig.ENABLED,
     chip_config=ChipQualityConfig.to_dict()
 )
 logger.info("Enhanced decision engine started, chip quality analysis enabled")
 
-# === Global Cache for Stock Search ===
-ALL_STOCKS_CACHE = None
-
-# === Global DataFetcher Instance (Singleton) ===
-# 复用 decision_maker 的 DataFetcher 实例，避免重复创建
-# 优势：共享缓存、节省内存、提升性能 30-50%
 data_fetcher = decision_maker.data_fetcher
 logger.info("Global DataFetcher instance initialized (singleton pattern)")
 
-# ==========================================
-# 可选 API 鉴权（公网暴露时建议开启）
-# 用法：设置环境变量 IRONTRADER_API_KEY=你的密钥 后重启；
-# 浏览器首次访问 http://host:5002/?key=你的密钥 即写入 Cookie，之后正常使用。
-# 未设置环境变量时完全不影响现有行为。
-# ==========================================
-_API_KEY = os.getenv('IRONTRADER_API_KEY', '').strip()
-if _API_KEY:
-    logger.info("API key authentication ENABLED")
+# 初始化并挂载各蓝图依赖
+init_market_routes(decision_maker, data_fetcher, _get_low_buy_engine)
+init_lowbuy_routes(lambda: data_fetcher)
+init_hero_routes(lambda: data_fetcher)
+init_intraday_routes(data_fetcher)
 
-@app.before_request
-def _check_api_key():
-    if not _API_KEY:
-        return None
-    if request.path.startswith('/static/'):
-        return None
-    provided = (
-        request.args.get('key', '')
-        or request.headers.get('X-API-Key', '')
-        or request.cookies.get('it_key', '')
-    )
-    # 使用 hmac.compare_digest 做常量时间比较，避免计时侧信道攻击
-    if provided and hmac.compare_digest(provided, _API_KEY):
-        return None
-    return jsonify({'success': False, 'error': 'Unauthorized: 缺少或错误的访问密钥（请用 /?key=密钥 访问）'}), 401
+# 注册 Blueprints
+app.register_blueprint(scanner_bp)
+app.register_blueprint(market_bp)
+app.register_blueprint(lowbuy_bp)
+app.register_blueprint(hero_bp)
+app.register_blueprint(backtest_bp)
+app.register_blueprint(intraday_bp)
 
-@app.after_request
-def _set_key_cookie(resp):
-    if _API_KEY and request.args.get('key', '') == _API_KEY:
-        resp.set_cookie('it_key', _API_KEY, max_age=30 * 24 * 3600, httponly=True)
+# 启动后台定时清理过期缓存（每30分钟执行一次）
+try:
+    data_fetcher.cache_manager.start_background_cleaner(interval=1800)
+except Exception as e:
+    logger.warning(f"启动后台缓存清理器失败: {e}")
+
+# 启动时清理旧版按日期命名的日志文件（默认保留 14 天，LOG_RETENTION_DAYS=0 关闭）
+try:
+    _removed_logs, _freed_bytes = cleanup_legacy_logs()
+    if _removed_logs:
+        logger.info(f"已清理 {_removed_logs} 个旧日志文件，释放 {_freed_bytes / 1024 / 1024:.1f} MB")
+except Exception as e:
+    logger.warning(f"清理旧日志失败: {e}")
+
+# 启动时清理一次过期任务，并每小时定期清理（僵尸任务已在 TaskManager 初始化时标记 interrupted）
+try:
+    import threading as _threading
+    from task_manager import default_task_manager as _task_manager
+
+    default_count = _task_manager.cleanup_tasks()
+    if default_count:
+        logger.info(f"启动时清理 {default_count} 条过期任务")
+
+    def _periodic_task_cleanup():
+        import time as _time
+        while True:
+            _time.sleep(3600)
+            try:
+                _task_manager.cleanup_tasks()
+            except Exception as exc:
+                logger.warning(f"定期任务清理失败: {exc}")
+
+    _threading.Thread(target=_periodic_task_cleanup, daemon=True, name="task-cleanup").start()
+except Exception as e:
+    logger.warning(f"启动任务清理器失败: {e}")
+
+
+
+def _start_dashboard_prewarm():
+    """
+    后台预热首页最关键的数据（情绪闸、指数状态）：服务启动后先算一次，盘中每 90 秒续一次，
+    用户打开首页时直接命中缓存，不再让"今日行动摘要"冷启动转圈十几秒。
+    单元测试（pytest）与 IRONTRADER_PREWARM=0 时不启动，避免测试访问网络。
+    """
+    import sys as _sys
+    if 'pytest' in _sys.modules or os.environ.get('IRONTRADER_PREWARM', '1') == '0':
+        return
+
+    def _loop():
+        import time as _time
+        from datetime import datetime as _dt
+        import market_routes as _mr
+        _time.sleep(2)
+        first = True
+        while True:
+            now = _dt.now()
+            in_session = now.weekday() < 5 and (9 * 60 <= now.hour * 60 + now.minute <= 15 * 60 + 10)
+            if first or in_session:
+                try:
+                    _mr._get_emotion_result()
+                    _mr._get_market_state()
+                    _mr.DASHBOARD_CACHE.get('dragon-ladder', lambda: _mr._get_dragon_ladder().build())
+                except Exception as exc:
+                    logger.warning(f"首页数据预热失败: {exc}")
+                first = False
+            _time.sleep(90)
+
+    import threading as _t
+    _t.Thread(target=_loop, daemon=True, name="dashboard-prewarm").start()
+
+
+_start_dashboard_prewarm()
+
+# === 前端路由 ===
+# 全部页面都是 React 前端（web/dist 构建产物），带 SPA history 回退。
+# 旧版原生 JS 界面（templates/ + static/）已下线，/legacy 与 /v2 只做跳转。
+# 开发期用 Vite dev server（localhost:5173，已配 proxy）。
+_WEB_DIST = _RESOURCE_DIR / 'web' / 'dist'
+_SPA_ROUTES = ('/', '/scanners', '/research', '/backtest')
+
+
+def _spa_index():
+    from flask import send_from_directory
+    if not (_WEB_DIST / 'index.html').is_file():
+        return (
+            "前端尚未构建。请执行: cd web && npm install && npm run build",
+            503,
+        )
+    # 入口页不能缓存，否则重新构建后浏览器仍加载旧的资源清单
+    resp = send_from_directory(str(_WEB_DIST), 'index.html', max_age=0)
+    resp.headers['Cache-Control'] = 'no-cache'
     return resp
 
-@app.route('/')
-def index():
-    """Merged Dashboard"""
-    return render_template('index.html')
 
-# === PROXY / DATA SOURCE CHECK ===
-# Ensure DataFetcher is using Sina
-try:
-    logger.info("Checking DataFetcher configuration...")
-    # Trigger a small fetch to verify
-    decision_maker.data_fetcher.get_index_realtime()
-    logger.info("DataFetcher initialized successfully")
-except Exception as e:
-    logger.warning(f"DataFetcher warning: {e}")
+for _route in _SPA_ROUTES:
+    app.add_url_rule(_route, f"spa_{_route.strip('/') or 'home'}", _spa_index)
 
-# ==========================================
-# API Routes - IronTrader (Rule-based)
-# ==========================================
 
-@app.route('/api/market-state')
-def market_state():
-    """Get current market state for risk control"""
-    result = decision_maker.risk_engine.get_market_state()
-    return jsonify({'success': True, 'data': result})
+@app.route('/assets/<path:asset_path>')
+def spa_assets(asset_path: str):
+    """前端构建资源；文件名带内容哈希，内容变了文件名就变，可以永久缓存（Cloudflare 边缘也会缓存）。"""
+    from flask import send_from_directory
+    resp = send_from_directory(str(_WEB_DIST / 'assets'), asset_path, max_age=365 * 24 * 3600)
+    resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return resp
 
-# 市场情绪过滤器（懒加载单例，复用全局 DataFetcher）
-_emotion_filter = None
-_EMOTION_FILTER_LOCK = Lock()
 
-def _get_emotion_filter():
-    global _emotion_filter
-    if _emotion_filter is None:
-        with _EMOTION_FILTER_LOCK:
-            if _emotion_filter is None:
-                from market_emotion_filter import MarketEmotionFilter
-                _emotion_filter = MarketEmotionFilter(data_fetcher)
-    return _emotion_filter
+@app.route('/legacy', strict_slashes=False)
+def legacy_redirect():
+    """旧版界面已下线，旧书签统一跳到新版首页。"""
+    from flask import redirect
+    return redirect('/', code=301)
 
-@app.route('/api/market-emotion')
-def market_emotion():
-    """全局市场情绪得分 + 仓位指令（开仓权限/仓位上限）"""
-    result = _get_emotion_filter().calculate_emotion_score()
-    return jsonify({'success': True, 'data': result})
 
-# 题材龙头梯队（懒加载单例，复用全局 DataFetcher）
-_dragon_ladder = None
-_DRAGON_LADDER_LOCK = Lock()
+@app.route('/v2', strict_slashes=False)
+@app.route('/v2/<path:spa_path>')
+def v2_redirect(spa_path: str = ''):
+    """旧的 /v2 地址（书签、分享链接）永久跳转到新首页，保留查询参数。"""
+    from flask import redirect, request
+    target = '/' + spa_path if spa_path else '/'
+    if request.query_string:
+        target += '?' + request.query_string.decode('utf-8', errors='ignore')
+    return redirect(target, code=301)
 
-def _get_dragon_ladder():
-    global _dragon_ladder
-    if _dragon_ladder is None:
-        with _DRAGON_LADDER_LOCK:
-            if _dragon_ladder is None:
-                from dragon_ladder import DragonLadder
-                _dragon_ladder = DragonLadder(data_fetcher)
-    return _dragon_ladder
-
-@app.route('/api/dragon-ladder')
-def dragon_ladder():
-    """题材龙头梯队：选最强龙头 + 分歧/一致 + 晋级率/空间高度 + 卖在一致预警"""
-    result = _get_dragon_ladder().build()
-    return jsonify({'success': True, 'data': result})
-
-# ===== 手动"重新回测"：后台线程跑 backtest_study 并累积样本，前端轮询进度 =====
-_BT_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'backtest_samples.csv')
-_BT_SUMMARY = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'backtest_summary.json')
-_BT_STATE = {'running': False, 'progress': '', 'started': None, 'finished': None,
-             'error': None, 'result': None}
-_BT_LOCK = Lock()
-
-
-def _run_backtest_job(days, horizons):
-    import pandas as pd
-    from backtest_study import collect, json_sane, merge_samples, summarize, update_summary_file
-    try:
-        def _cb(i, total, got):
-            _BT_STATE['progress'] = f"{i}/{total}（已收集 {got} 笔）"
-        old = None
-        if os.path.exists(_BT_SAMPLES):
-            try:
-                old = pd.read_csv(_BT_SAMPLES)
-            except Exception:
-                old = None
-        new = collect(days, horizons, progress_cb=_cb)
-        df = merge_samples(old, new)
-        os.makedirs(os.path.dirname(_BT_SAMPLES), exist_ok=True)
-        df.to_csv(_BT_SAMPLES, index=False, encoding='utf-8-sig')
-        added = len(df) - (0 if old is None else len(old))
-        result = summarize(df, horizons)
-        result['added'] = max(added, 0)
-        result['as_of'] = time.strftime('%Y-%m-%d %H:%M')
-        # 周报自检：写 summary JSON 并检测结论翻转，翻转随结果返回给前端
-        result['flips'] = update_summary_file(df, horizons, path=_BT_SUMMARY)
-        # 消毒兜底：NaN 序列化出去是非法 JSON，前端 response.json() 会直接抛错
-        _BT_STATE['result'] = json_sane(result)
-    except Exception as e:
-        logger.error(f"手动回测失败: {e}")
-        _BT_STATE['error'] = str(e)
-    finally:
-        _BT_STATE['running'] = False
-        _BT_STATE['finished'] = time.strftime('%Y-%m-%d %H:%M:%S')
-
-
-@app.route('/api/backtest/rerun', methods=['POST'])
-def backtest_rerun():
-    """手动触发一次回测（后台线程），累积到样本库；前端轮询 /api/backtest/status。"""
-    days = int((request.get_json(silent=True) or {}).get('days', 10))
-    days = max(3, min(days, 30))
-    horizons = [1, 3, 5]
-    with _BT_LOCK:
-        if _BT_STATE['running']:
-            return jsonify({'success': True, 'data': {'running': True, 'progress': _BT_STATE['progress']}})
-        _BT_STATE.update({'running': True, 'progress': '启动中…', 'started': time.strftime('%Y-%m-%d %H:%M:%S'),
-                          'finished': None, 'error': None, 'result': None})
-        Thread(target=_run_backtest_job, args=(days, horizons), daemon=True).start()
-    return jsonify({'success': True, 'data': {'running': True, 'progress': _BT_STATE['progress']}})
-
-
-@app.route('/api/backtest/status')
-def backtest_status():
-    """回测进度/结果轮询。"""
-    return jsonify({'success': True, 'data': {
-        'running': _BT_STATE['running'], 'progress': _BT_STATE['progress'],
-        'started': _BT_STATE['started'], 'finished': _BT_STATE['finished'],
-        'error': _BT_STATE['error'], 'result': _BT_STATE['result'],
-    }})
-
-
-@app.route('/api/backtest/summary')
-def backtest_summary():
-    """最近一次回测周报（含结论翻转），由每周任务/手动回测更新。"""
-    if not os.path.exists(_BT_SUMMARY):
-        return jsonify({'success': True, 'data': None})
-    try:
-        import json as _json
-        from backtest_study import json_sane
-        with open(_BT_SUMMARY, encoding='utf-8') as f:
-            # 历史文件可能残留 NaN 字面量（json.load 读得进、浏览器读不了），消毒后再返回
-            return jsonify({'success': True, 'data': json_sane(_json.load(f))})
-    except Exception as e:
-        logger.warning(f"读取回测周报失败: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/api/stock/<code>')
-def stock_analysis(code):
-    """Analyze single stock"""
-    # 验证股票代码
-    raise_if_invalid_stock_code(code)
-
-    result = decision_maker.make_decision(code)
-    return jsonify({'success': True, 'data': result})
-
-@app.route('/api/analyze/<code>')
-def unified_analyze(code):
-    """
-    统一分析入口：一次返回 龙头决策(dragon) + 低吸分析(lowbuy) + 市场状态
-    任一引擎失败不影响另一个，错误信息放在 errors 中
-    """
-    raise_if_invalid_stock_code(code)
-    dragon, lowbuy, errors = None, None, {}
-
-    try:
-        dragon = decision_maker.make_decision(code)
-    except Exception as e:
-        logger.error(f"统一分析-龙头引擎失败 {code}: {e}")
-        errors['dragon'] = str(e)
-
-    try:
-        lowbuy = _get_low_buy_engine().analyze(code)
-    except Exception as e:
-        logger.error(f"统一分析-低吸引擎失败 {code}: {e}")
-        errors['lowbuy'] = str(e)
-
-    if dragon is None and lowbuy is None:
-        return jsonify({'success': False, 'error': f"分析失败: {errors}"}), 500
-
-    return jsonify({'success': True, 'data': {
-        'code': code,
-        'market_state': (dragon or {}).get('market_state', {}),
-        'dragon': dragon,
-        'lowbuy': lowbuy,
-        'errors': errors,
-    }})
-
-@app.route('/api/hotzt')
-def hot_zt_stocks():
-    """Get limit-up stocks sorted by seal amount"""
-    df = data_fetcher.get_limit_up_pool()
-
-    if df is None or len(df) == 0:
-        return jsonify({'success': False, 'error': 'No limit-up stocks found'})
-
-    # Convert list to dict if needed
-    if isinstance(df, list):
-        stocks_list = df
-    else:
-        stocks_list = df.to_dict('records')
-
-    # Sort by seal amount descending
-    stocks_list.sort(key=lambda x: x.get('seal_amount', 0), reverse=True)
-    stocks_list = stocks_list[:APILimitConstants.MAX_HOT_STOCKS]
-
-    # Format
-    stocks = []
-    for row in stocks_list:
-        stocks.append({
-            'code': row['code'],
-            'name': row['name'],
-            'seal_amount': row['seal_amount'],
-            'limit_count': row['limit_count'],
-            'first_limit_time': str(row['first_limit_time']),
-            'sector': row.get('sector', '')
-        })
-
-    return jsonify({'success': True, 'data': stocks, 'count': len(stocks)})
-
-@app.route('/api/hot-sectors')
-def hot_sectors():
-    """Get sectors with most limit-up stocks"""
-    df = data_fetcher.get_limit_up_pool()
-
-    if df is None or len(df) == 0:
-        return jsonify({'success': False, 'error': 'No limit-up stocks found'})
-
-    # Convert list to dict if needed
-    if isinstance(df, list):
-        stocks_list = df
-    else:
-        stocks_list = df.to_dict('records')
-
-    # Group by sector
-    sector_data = {}
-    for stock in stocks_list:
-        sector = stock.get('sector', 'Other')
-        if sector not in sector_data:
-            sector_data[sector] = {
-                'name': sector,
-                'count': 0,
-                'stocks': []
-            }
-        sector_data[sector]['count'] += 1
-        sector_data[sector]['stocks'].append({
-            'code': stock['code'],
-            'name': stock['name']
-        })
-
-    # Convert to list and sort
-    sectors = list(sector_data.values())
-    sectors.sort(key=lambda x: x['count'], reverse=True)
-
-    return jsonify({'success': True, 'data': sectors, 'count': len(sectors)})
-
-# zt-pool 响应级缓存：批量决策含筹码质量分析较重，60 秒内直接复用结果
-_ZT_POOL_CACHE = {'data': None, 'at': 0.0}
-_ZT_POOL_CACHE_TTL = 60  # 秒
-_ZT_POOL_CACHE_LOCK = Lock()
-
-@app.route('/api/zt-pool')
-def zt_pool():
-    """
-    Get limit-up pool with decision analysis
-    Enhanced: Include chip quality scoring
-    """
-    refresh = request.args.get('refresh') == '1'
-
-    # 响应缓存命中（refresh=1 跳过）
-    if not refresh:
-        with _ZT_POOL_CACHE_LOCK:
-            cached = _ZT_POOL_CACHE['data']
-            if cached is not None and (time.time() - _ZT_POOL_CACHE['at']) < _ZT_POOL_CACHE_TTL:
-                return jsonify({**cached, 'cached': True})
-
-    df = data_fetcher.get_limit_up_pool(force_refresh=refresh)
-
-    if df is None or len(df) == 0:
-        return jsonify({'success': False, 'error': 'No limit-up stocks found'})
-
-    # Convert list to dict if needed
-    if isinstance(df, list):
-        stocks_list = df
-    else:
-        stocks_list = df.to_dict('records')
-
-    # 批量决策：全局数据（涨停池/市场状态/板块资金）只获取一次，避免每股重复请求
-    codes = [s['code'] for s in stocks_list]
-    try:
-        batch_results = decision_maker.batch_make_decision(codes)
-    except Exception as e:
-        logger.error(f"批量决策失败，回退单股模式: {e}")
-        batch_results = {}
-
-    results = []
-    for stock in stocks_list:
-        code = stock['code']
-
-        # Make decision (enhanced if available)
-        try:
-            decision_result = batch_results.get(code) or decision_maker.make_decision(code)
-
-            # Extract decision info
-            decision = decision_result.get('decision', 'IGNORE')
-            confidence = decision_result.get('confidence', 0)
-            reason = decision_result.get('reason', '')
-            market_state = decision_result.get('market_state', {})
-            stock_info = decision_result.get('stock_info', {})
-            sector_effect = decision_result.get('sector_effect', {})
-            sector_money = decision_result.get('sector_money', {})
-            chip_quality = decision_result.get('chip_quality', {})
-            arbitrage = decision_result.get('arbitrage', [])
-
-            # Build response
-            stock_data = {
-                'code': code,
-                'name': stock['name'],
-                'decision': decision,
-                'confidence': confidence,
-                'reason': reason,
-                'risk_warning': decision_result.get('risk_warning', ''),
-                'seal_amount': stock['seal_amount'],
-                'limit_count': stock['limit_count'],
-                'first_limit_time': str(stock['first_limit_time']),
-                'sector': stock.get('sector', ''),
-                'turnover_rate': stock.get('turnover_rate', 0),
-                'market_state': market_state,
-                'stock_info': stock_info,
-                'sector_effect': sector_effect,
-                'sector_money': sector_money,
-                'chip_quality': chip_quality,  # Enhanced: chip quality
-                'arbitrage': arbitrage
-            }
-
-            results.append(stock_data)
-
-        except Exception as e:
-            logger.error(f"Error analyzing {code}: {e}")
-            # 即使分析失败，仍然保留该股票的基本信息
-            stock_data = {
-                'code': code,
-                'name': stock['name'],
-                'decision': 'N/A',
-                'confidence': 0,
-                'reason': f'分析异常: {str(e)[:50]}',
-                'seal_amount': stock['seal_amount'],
-                'limit_count': stock['limit_count'],
-                'first_limit_time': str(stock['first_limit_time']),
-                'sector': stock.get('sector', ''),
-                'turnover_rate': stock.get('turnover_rate', 0),
-                'market_state': {},
-                'stock_info': {},
-                'sector_effect': {},
-                'sector_money': {},
-                'chip_quality': {},
-                'arbitrage': []
-            }
-            results.append(stock_data)
-
-    # Sort by seal amount descending
-    results.sort(key=lambda x: x['seal_amount'], reverse=True)
-
-    payload = {'success': True, 'data': results, 'count': len(results)}
-    with _ZT_POOL_CACHE_LOCK:
-        _ZT_POOL_CACHE['data'] = payload
-        _ZT_POOL_CACHE['at'] = time.time()
-    return jsonify(payload)
-
-# ==========================================
-# Low-Buy Analysis Routes (低吸分析系统)
-# ==========================================
-
-# Lazy-init low buy engine
-_low_buy_engine = None
-_LOWBUY_CANDIDATES_LOCK = Lock()
-
-def _get_low_buy_engine():
-    global _low_buy_engine
-    if _low_buy_engine is None:
-        from low_buy_engine import LowBuyEngine
-        _low_buy_engine = LowBuyEngine(data_fetcher)
-    return _low_buy_engine
-
-@app.route('/api/lowbuy/analyze', methods=['POST'])
-def lowbuy_analyze():
-    """单只股票低吸分析"""
-    data = request.get_json() or {}
-    code = data.get('code', '').strip()
-    if not code:
-        code = request.args.get('code', '').strip()
-    raise_if_invalid_stock_code(code)
-
-    engine = _get_low_buy_engine()
-    result = engine.analyze(code)
-    return jsonify({'success': True, 'data': result})
-
-@app.route('/api/lowbuy/batch', methods=['POST'])
-def lowbuy_batch():
-    """批量低吸分析"""
-    data = request.get_json() or {}
-    codes = data.get('codes', [])
-    if not codes:
-        return jsonify({'success': False, 'error': '请提供股票代码列表'}), 400
-    codes = [str(c).strip() for c in codes]
-    for c in codes:
-        raise_if_invalid_stock_code(c)
-
-    engine = _get_low_buy_engine()
-    results = engine.batch_analyze(codes)
-    return jsonify({'success': True, 'data': results, 'count': len(results)})
-
-@app.route('/api/lowbuy/sentiment')
-def lowbuy_sentiment():
-    """当前市场情绪周期"""
-    engine = _get_low_buy_engine()
-    result = engine.sentiment_analyzer.analyze()
-    return jsonify({'success': True, 'data': result})
-
-@app.route('/api/lowbuy/sectors')
-def lowbuy_sectors():
-    """所有板块资金流向"""
-    engine = _get_low_buy_engine()
-    results = engine.sector_scorer.score_all_sectors()
-    return jsonify({'success': True, 'data': results, 'count': len(results)})
-
-@app.route('/api/lowbuy/data-source-health')
-def lowbuy_data_source_health():
-    """当前外部数据源健康状态"""
-    engine = _get_low_buy_engine()
-    return jsonify({
-        'success': True,
-        'data': engine.fetcher.get_data_source_health()
-    })
-
-@app.route('/api/lowbuy/candidates')
-def lowbuy_candidates():
-    """全A扫描低吸候选"""
-    if not _LOWBUY_CANDIDATES_LOCK.acquire(blocking=False):
-        return jsonify({'success': False, 'error': '全A低吸扫描正在运行，请稍后再试'}), 409
-    try:
-        min_score = float(request.args.get('min_score', APIConfig.LOWBUY_DEFAULT_MIN_SCORE))
-        engine = _get_low_buy_engine()
-        results = engine.scan_candidates(min_score=min_score)
-        return jsonify({'success': True, 'data': results, 'count': len(results)})
-    finally:
-        _LOWBUY_CANDIDATES_LOCK.release()
-
-
-def _run_lowbuy_candidates_job(job_id, min_score):
-    def progress_callback(**updates):
-        if _scan_cancel_requested(job_id):
-            raise RuntimeError('用户已取消扫描')
-        _update_scan_job(job_id, status='running', **updates)
-
-    try:
-        _update_scan_job(
-            job_id,
-            status='running',
-            phase='启动中',
-            message='正在启动全A低吸扫描...',
-            done=0,
-            total=0,
-            percent=0,
-            matched=0,
-            errors=0,
-        )
-        engine = _get_low_buy_engine()
-        started = time.time()
-        results = engine.scan_candidates(
-            min_score=min_score,
-            progress_callback=progress_callback,
-            cancel_check=lambda: _scan_cancel_requested(job_id),
-        )
-        if _scan_cancel_requested(job_id):
-            raise RuntimeError('用户已取消扫描')
-        payload = {
-            'success': True,
-            'data': results,
-            'count': len(results),
-            'elapsed_sec': round(time.time() - started, 1),
-            'meta': {
-                'min_score': min_score,
-                'scanned': int((_get_scan_job(job_id) or {}).get('total') or 0),
-            },
-        }
-        current = _get_scan_job(job_id) or {}
-        _update_scan_job(
-            job_id,
-            status='completed',
-            phase='已完成',
-            message=f"全A低吸扫描完成，发现 {len(results)} 只候选",
-            done=int(current.get('done') or current.get('total') or 0),
-            total=int(current.get('total') or current.get('done') or 0),
-            matched=len(results),
-            errors=int(current.get('errors') or 0),
-            result=payload,
-            finished_at=time.time(),
-        )
-    except Exception as e:
-        if _scan_cancel_requested(job_id):
-            _update_scan_job(
-                job_id,
-                status='cancelled',
-                phase='已取消',
-                message='扫描已取消',
-                error=_safe_error_text(e),
-                finished_at=time.time(),
-            )
-            return
-        logger.error("全A低吸扫描任务失败", exc_info=True)
-        error_text = _safe_error_text(e)
-        _update_scan_job(
-            job_id,
-            status='failed',
-            phase='失败',
-            message='全A低吸扫描失败',
-            error=error_text,
-            finished_at=time.time(),
-        )
-    finally:
-        _LOWBUY_CANDIDATES_LOCK.release()
-
-
-@app.route('/api/lowbuy/candidates/start', methods=['POST'])
-def lowbuy_candidates_start():
-    """后台启动全A低吸候选扫描"""
-    if not _LOWBUY_CANDIDATES_LOCK.acquire(blocking=False):
-        active_job = _get_active_scan_job('lowbuy_candidates')
-        return jsonify({
-            'success': False,
-            'error': '全A低吸扫描正在运行，请稍后再试',
-            'job_id': active_job.get('id') if active_job else '',
-            'job': active_job,
-        }), 409
-
-    try:
-        min_score = float(request.args.get('min_score', APIConfig.LOWBUY_DEFAULT_MIN_SCORE))
-        job = _create_scan_job(
-            'lowbuy_candidates',
-            params={'min_score': min_score},
-            cancel_supported=True,
-        )
-        thread = Thread(
-            target=_run_lowbuy_candidates_job,
-            args=(job['id'], min_score),
-            daemon=True,
-        )
-        thread.start()
-        return jsonify({'success': True, 'job_id': job['id'], 'job': job})
-    except Exception:
-        _LOWBUY_CANDIDATES_LOCK.release()
-        raise
-
-# ==========================================
-# Search Route
-# ==========================================
-
-@app.route('/api/search')
-def search_stocks():
-    """Search stocks by name or code"""
-    query = request.args.get('q', '').strip()
-    if not query:
-        return jsonify({'success': False, 'error': 'Query required'}), 400
-
-    engine = _get_low_buy_engine()
-    stock_list = engine.fetcher._get_cache("stock_list_all_a")
-    if not stock_list:
-        import akshare as ak
-        df_info = ak.stock_info_a_code_name()
-        if df_info is not None and not df_info.empty:
-            stock_list = df_info.to_dict('records')
-            engine.fetcher._set_cache("stock_list_all_a", stock_list)
-
-    results = []
-    if stock_list:
-        count = 0
-        for item in stock_list:
-            code = str(item.get('code', ''))
-            name = str(item.get('name', ''))
-            if query in code or query in name:
-                results.append({
-                    'code': code,
-                    'name': name,
-                    'market': 'SH' if code.startswith(('6', '9')) else 'SZ'
-                })
-                count += 1
-                if count >= APILimitConstants.MAX_SEARCH_RESULTS:
-                    break
-
-    return jsonify({'success': True, 'data': results})
-
-# ==========================================
-# Counter-Trend Hero Routes (逆势英雄)
-# ==========================================
-
-# Lazy-init scanner + 并发锁
-_hero_scanner = None
-_HERO_SCAN_LOCK = Lock()
-
-def _get_hero_scanner():
-    global _hero_scanner
-    if _hero_scanner is None:
-        from counter_trend_hero import CounterTrendHeroScanner
-        _hero_scanner = CounterTrendHeroScanner(data_fetcher)
-    return _hero_scanner
-
-@app.route('/api/hero/scan', methods=['GET', 'POST'])
-def hero_scan():
-    """逆势英雄扫描：暴跌日找"该跌不跌"甚至逆势涨停的强势股（同步模式）"""
-    if not _HERO_SCAN_LOCK.acquire(blocking=False):
-        return jsonify({'success': False, 'error': '逆势英雄扫描正在运行，请稍后再试'}), 409
-    try:
-        min_gain = float(request.args.get('min_gain', 3.0))
-        max_turnover = float(request.args.get('max_turnover', 25.0))
-        lookback = int(request.args.get('lookback', 10))
-
-        scanner = _get_hero_scanner()
-        result = scanner.scan(
-            min_gain_pct=min_gain,
-            max_turnover=max_turnover,
-            lookback_days=lookback,
-            cancel_check=lambda: _scan_cancel_requested(job_id),
-        )
-        if _scan_cancel_requested(job_id):
-            raise RuntimeError('用户已取消扫描')
-        return jsonify(result)
-    finally:
-        _HERO_SCAN_LOCK.release()
-
-
-def _run_hero_scan_job(job_id: str, min_gain: float, max_turnover: float, lookback: int):
-    """后台执行逆势英雄扫描"""
-    started = time.time()
-    try:
-        _update_scan_job(job_id, status='running', phase='扫描中', message='正在扫描逆势英雄...')
-        scanner = _get_hero_scanner()
-        result = scanner.scan(
-            min_gain_pct=min_gain,
-            max_turnover=max_turnover,
-            lookback_days=lookback,
-        )
-        heroes = (result or {}).get('heroes') or []
-        _update_scan_job(
-            job_id,
-            status='completed',
-            phase='已完成',
-            message=f"逆势英雄扫描完成，发现 {len(heroes) if isinstance(heroes, list) else 0} 只",
-            matched=len(heroes) if isinstance(heroes, list) else 0,
-            result=result,
-            elapsed_sec=round(time.time() - started, 1),
-            finished_at=time.time(),
-        )
-    except Exception as e:
-        if _scan_cancel_requested(job_id):
-            _update_scan_job(
-                job_id,
-                status='cancelled',
-                phase='已取消',
-                message='扫描已取消',
-                error=str(e),
-                finished_at=time.time(),
-            )
-            return
-        logger.error("逆势英雄扫描任务失败", exc_info=True)
-        _update_scan_job(
-            job_id,
-            status='failed',
-            phase='失败',
-            message='逆势英雄扫描失败',
-            error=str(e),
-            finished_at=time.time(),
-        )
-    finally:
-        _HERO_SCAN_LOCK.release()
-
-
-@app.route('/api/hero/scan/start', methods=['POST'])
-def hero_scan_start():
-    """后台启动逆势英雄扫描，返回 job_id，进度通过 /api/scanners/jobs/<job_id> 查询"""
-    if not _HERO_SCAN_LOCK.acquire(blocking=False):
-        active_job = _get_active_scan_job('hero_scan')
-        return jsonify({
-            'success': False,
-            'error': '逆势英雄扫描正在运行，请稍后再试',
-            'job_id': active_job.get('id') if active_job else '',
-            'job': active_job,
-        }), 409
-    try:
-        min_gain = float(request.args.get('min_gain', 3.0))
-        max_turnover = float(request.args.get('max_turnover', 25.0))
-        lookback = int(request.args.get('lookback', 10))
-
-        job = _create_scan_job(
-            'hero_scan',
-            params={
-                'min_gain': min_gain,
-                'max_turnover': max_turnover,
-                'lookback': lookback,
-            },
-            cancel_supported=True,
-        )
-        thread = Thread(
-            target=_run_hero_scan_job,
-            args=(job['id'], min_gain, max_turnover, lookback),
-            daemon=True,
-        )
-        thread.start()
-        return jsonify({'success': True, 'job_id': job['id'], 'job': job})
-    except Exception:
-        _HERO_SCAN_LOCK.release()
-        raise
 
 if __name__ == '__main__':
     app.run(host=FlaskConfig.HOST, port=FlaskConfig.PORT, debug=FlaskConfig.DEBUG)
