@@ -14,7 +14,12 @@ def client():
         yield c
 
 
-def test_root_page(client):
+def test_root_page(client, tmp_path, monkeypatch):
+    # web/dist 是构建产物（不进 Git），这里用临时的入口页代替，只验证首页路由可用
+    import app as app_module
+
+    (tmp_path / "index.html").write_text("<!DOCTYPE html><title>IronTrader</title>", encoding="utf-8")
+    monkeypatch.setattr(app_module, "_WEB_DIST", tmp_path)
     response = client.get("/")
     assert response.status_code == 200
     text = response.data.decode("utf-8")

@@ -1,14 +1,24 @@
 name: CI
 
+# 每次推送到 master、或向 master 提 Pull Request 时自动运行：
+#   后端：语法检查 + 全部离线单元测试（需要实时行情的测试默认跳过）
+#   前端：TypeScript 类型检查 + 生产构建
+# 任何一项失败，GitHub 上这次提交会标红，并发邮件提醒。
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  backend:
+    name: 后端测试
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -17,21 +27,49 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: |
+            requirements-lock.txt
+            requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements-lock.txt ]; then
-            pip install -r requirements-lock.txt
+            # 打包专用（PyInstaller / Windows）的依赖在 Linux 上用不到，跳过
+            grep -viE '^(pyinstaller|pyinstaller-hooks-contrib|pefile|altgraph|pywin32-ctypes)==' requirements-lock.txt > /tmp/requirements-ci.txt
+            pip install -r /tmp/requirements-ci.txt
           else
             pip install -r requirements.txt
           fi
-          pip install pytest ruff
+          pip install pytest ruff flask-cors
 
-      - name: Lint with ruff
-        run: |
-          # 检查 Python 语法错误和未定义名称
-          ruff check . --exclude scripts --select=E9,F63,F7,F82
+      - name: Lint (syntax errors and undefined names)
+        run: ruff check . --exclude scripts,tools,web --select=E9,F63,F7,F82
 
-      - name: Run unit tests
-        run: pytest tests/unit
+      - name: Unit tests
+        env:
+          IRONTRADER_PREWARM: "0"
+        run: pytest tests/unit -q
+
+  frontend:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check and build
+        run: npm run build
