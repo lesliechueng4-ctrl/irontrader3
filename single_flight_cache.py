@@ -221,6 +221,14 @@ class SwrCache:
         self._store(key, value)
         return value, "built"
 
+    def peek(self, key: Hashable) -> Optional[Any]:
+        """只读：可用期内（未超过 stale_ttl）有值就返回，否则 None；不触发构建或刷新。"""
+        with self._lock:
+            entry = self._entries.get(key)
+        if entry is None or self._clock() - entry[1] >= self.stale_ttl:
+            return None
+        return entry[0]
+
     def put(self, key: Hashable, value: Any) -> None:
         """外部已拿到最新值（例如用户强制刷新）时直接写入，其他人马上共享。"""
         self._store(key, value)

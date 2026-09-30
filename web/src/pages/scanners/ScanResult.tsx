@@ -6,7 +6,10 @@ import type { Hero, HeroScanResult, Job, LowbuyResult, ScanRow, TableScanResult 
 import { C, changeColor, fmtPct } from '../../theme';
 import { shanghaiToday } from '../../utils/market';
 import { useWatchlist } from '../../utils/storage';
+import type { NewsCatalystRow } from '../../api/types-news';
 import {
+  CATALYST_COLUMNS,
+  catalystTone,
   HERO_COLUMNS,
   heroTone,
   latestDataDate,
@@ -204,6 +207,60 @@ export function ScanResultView({ saved, onClear, ...actions }: { saved: SavedSca
   const r = (saved.result ?? {}) as TableScanResult;
   if (r.success === false) return <Alert type="error" showIcon message={`扫描失败：${r.error ?? '未知错误'}`} />;
   const meta = r.meta ?? {};
+
+  if (saved.kind === 'news_catalyst') {
+    const rows = (r.data ?? []) as unknown as NewsCatalystRow[];
+    const m = meta as {
+      status_counts?: Record<string, number>;
+      can_open?: boolean | null;
+      gate_reason?: string;
+      off_session?: boolean;
+      reaction_day?: string;
+    };
+    const c = m.status_counts ?? {};
+    return (
+      <>
+        {header([
+          { label: `利好 ${rows.length} 条` },
+          { label: `关注 ${c.focus ?? 0}` },
+          { label: `等待 ${c.wait ?? 0}` },
+          { label: `已兑现 ${c.priced_in ?? 0}` },
+          { label: `市场不认 ${c.rejected ?? 0}` },
+          { label: `买不进 ${c.blocked ?? 0}` },
+          ...(m.reaction_day ? [{ label: `反应日 ${m.reaction_day.slice(5)}` }] : []),
+        ])}
+        {staleAlert}
+        {m.can_open === false && m.gate_reason && (
+          <Alert
+            type="warning"
+            showIcon
+            className="scan-alert"
+            message={`统一执行闸暂停新增开仓：${m.gate_reason}。以下"关注"只作研究线索。`}
+          />
+        )}
+        {m.off_session && !m.gate_reason && (
+          <Alert type="info" showIcon className="scan-alert" message="现在是非交易时段：涨跌幅是上一交易日的，关注的票要等开盘再验证。" />
+        )}
+        {rows.length ? (
+          <DataTable<NewsCatalystRow>
+            rows={rows}
+            columns={CATALYST_COLUMNS}
+            codeOf={(x) => x.code}
+            nameOf={(x) => x.name}
+            exportName="消息催化"
+            rowTone={catalystTone}
+            extraActions={(x) => <IntradayButton code={x.code} name={x.name} onIntraday={actions.onIntraday} />}
+            {...tableProps}
+          />
+        ) : (
+          <Empty description="当前窗口内没有重大 / 显著利好公告" />
+        )}
+        <div className="muted small scan-output">
+          这是研究线索，不是买入信号：点进单票研报看统一结论（已计入消息面）。消息后首个交易日高开一字买不进，高开分歧才有机会。
+        </div>
+      </>
+    );
+  }
 
   if (saved.kind === 'lowbuy_candidates') {
     const rows = (r.data ?? []) as unknown as LowbuyResult[];

@@ -1,4 +1,4 @@
-// 消息面（后端 news_catalyst.py）。第一版是观察模式：只展示、只提醒，不改变任何买卖结论。
+// 消息面（后端 news_catalyst.py）。计入低吸与龙头的方式见 news_weighting.py。
 
 export type NewsLevel = 'major' | 'notable' | 'minor' | 'noise';
 
@@ -45,7 +45,6 @@ export interface StockNews {
   events: NewsEvent[];
   sources: Record<string, { ok: boolean; count?: number; error?: string }>;
   as_of: string;
-  mode: 'observe';
 }
 
 export interface NewsRadar {
@@ -54,4 +53,31 @@ export interface NewsRadar {
   window: { begin: string; reaction_day: string; end: string };
   complete: boolean;
   as_of: string;
+}
+
+/** 消息催化扫描的一行（news_scanner.py） */
+export interface NewsCatalystRow {
+  code: string;
+  name: string;
+  event_type: string;
+  event_label: string;
+  level: 'major' | 'notable';
+  level_label: string;
+  title: string;
+  url?: string | null;
+  published_at?: string | null;
+  timing: string;
+  pending: boolean;
+  related: number;
+  price?: number | null;
+  change_pct?: number | null;
+  limit_count?: number | null;
+  sector?: string | null;
+  sector_limit_ups: number;
+  mainline: boolean;
+  status: 'focus' | 'wait' | 'priced_in' | 'rejected' | 'blocked';
+  status_label: string;
+  reasons: string[];
+  blockers: string[];
+  quote_error?: string | null;
 }

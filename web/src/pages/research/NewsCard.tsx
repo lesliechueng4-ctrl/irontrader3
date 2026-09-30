@@ -10,7 +10,7 @@ import { C } from '../../theme';
 
 const TONE_COLOR = { up: C.up, down: C.down, flat: C.text2 } as const;
 
-/** 单票研报 · 消息面（观察模式：只展示，不改变上面的统一结论） */
+/** 单票研报 · 消息面明细（分数已按权重计入低吸第六维和龙头信心） */
 export default function NewsCard({ code, name }: { code: string; name?: string }) {
   const news = useStockNews(code, name);
   const qc = useQueryClient();
@@ -44,7 +44,7 @@ export default function NewsCard({ code, name }: { code: string; name?: string }
       className="news-card"
       title={
         <span>
-          消息面 <span className="muted small">观察模式 · 不影响上面的结论</span>
+          消息面 <span className="muted small">已计入低吸评分（第六维）与龙头信心</span>
         </span>
       }
       extra={

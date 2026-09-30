@@ -159,7 +159,6 @@ def test_stock_uses_announcement_name_for_news_and_survives_one_source_failing()
     assert fetcher.news_name == "测试股份" and data["name"] == "测试股份"
     assert data["sources"]["announcement"]["ok"] and not data["sources"]["news"]["ok"]
     assert data["score"] < 0 and data["alerts"][0]["title"].startswith("关于收到")
-    assert data["mode"] == "observe"
     assert "columns" not in data["events"][0]  # 只返回公开字段
 
 

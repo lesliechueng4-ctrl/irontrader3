@@ -26,11 +26,16 @@ lowbuy_bp = Blueprint("lowbuy_routes", __name__)
 _low_buy_engine = None
 _LOWBUY_CANDIDATES_LOCK = Lock()
 _data_fetcher_getter = None
+_news_providers = (None, None)
 
 
-def init_lowbuy_routes(data_fetcher_getter):
-    global _data_fetcher_getter
+def init_lowbuy_routes(data_fetcher_getter, news_provider=None, news_bulk_provider=None):
+    """news_provider / news_bulk_provider：消息面（低吸第六维）的数据来源，app.py 注入；不传则该维度显示暂无。"""
+    global _data_fetcher_getter, _news_providers
     _data_fetcher_getter = data_fetcher_getter
+    _news_providers = (news_provider, news_bulk_provider)
+    if _low_buy_engine is not None:
+        _low_buy_engine.news_provider, _low_buy_engine.news_bulk_provider = _news_providers
 
 
 def _safe_error_text(value):
@@ -43,6 +48,7 @@ def _get_low_buy_engine():
         from low_buy_engine import LowBuyEngine
         df = _data_fetcher_getter() if _data_fetcher_getter else None
         _low_buy_engine = LowBuyEngine(df)
+        _low_buy_engine.news_provider, _low_buy_engine.news_bulk_provider = _news_providers
     return _low_buy_engine
 
 

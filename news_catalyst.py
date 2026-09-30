@@ -1,10 +1,8 @@
 """
 消息面刺激：抓取个股公告 / 新闻 → 规则分类 → 加权打分；以及全市场"重大消息雷达"。
 
-第一版是【观察模式】：只展示、只提醒，不改变龙头 / 低吸 / 执行闸的任何结论。
-为什么先只观察：消息的方向和力度很依赖上下文（同一条"减持"对大盘股和小票影响完全不同，
-"利好兑现"也很常见），规则打分需要作者看一段时间、调好权重之后，再决定要不要接进结论。
-接入原系统的几种方案见 docs/消息面权重设计.md。
+这里只负责"消息是什么、分数多少"。怎么计入低吸 / 龙头见 news_weighting.py，
+消息催化扫描见 news_scanner.py，整体设计见 docs/消息面权重设计.md。
 
 打分公式（每条消息）：
     贡献 = 方向(+1/-1) × 等级分(LEVEL_POINTS) × 来源权重(SOURCE_WEIGHT) × 时间衰减
@@ -459,6 +457,40 @@ class NewsFetcher:
             })
         return out, self._org_ids.get(f"{code}:name", "")
 
+    def announcements_bulk(self, codes: List[str], since: date, batch: int = 20,
+                           max_pages: int = 5) -> Dict[str, Tuple[List[Dict[str, Any]], str]]:
+        """东财公告接口支持一次传多个代码；按 20 只一组翻页，直到翻到 since 之前。"""
+        out: Dict[str, Tuple[List[Dict[str, Any]], str]] = {}
+        for i in range(0, len(codes), batch):
+            group = codes[i:i + batch]
+            found: Dict[str, List[Dict[str, Any]]] = {c: [] for c in group}
+            names: Dict[str, str] = {}
+            ok = True
+            for page in range(1, max_pages + 1):
+                res = self.client.get("eastmoney_notice", EM_ANN_URL, headers=_UA, params={
+                    "page_size": 100, "page_index": page, "ann_type": "A", "client_source": "web",
+                    "f_node": 0, "s_node": 0, "stock_list": ",".join(group),
+                })
+                if not res.ok:
+                    ok = page > 1  # 第一页就失败：这一组都算取不到
+                    break
+                items = ((res.response.json() or {}).get("data") or {}).get("list") or []
+                oldest = None
+                for item in items:
+                    ev = parse_em_announcement(item)
+                    if not ev or ev["code"] not in found:
+                        continue
+                    names.setdefault(ev["code"], ev["name"])
+                    oldest = ev["effective_date"] if oldest is None else min(oldest, ev["effective_date"])
+                    if ev["effective_date"] >= since:
+                        found[ev["code"]].append(ev)
+                if len(items) < 100 or (oldest is not None and oldest < since):
+                    break
+            if ok:
+                for c in group:
+                    out[c] = (found[c], names.get(c, ""))
+        return out
+
     # ---- 新闻 ----
     def news(self, code: str, name: str, since: date) -> List[Dict[str, Any]]:
         param = {
@@ -586,7 +618,27 @@ class NewsCatalystService:
 
         if not any(s.get("ok") for s in sources.values()):
             raise RuntimeError("公告和新闻都获取失败：" + "；".join(s.get("error", "") for s in sources.values()))
+        return self._assemble(code, name, events, sources, now)
 
+    def stocks_from_announcements(self, codes: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        扫描用的批量版本：一次查几十只股票的公告（不查新闻，省请求）。
+        查询失败的股票不出现在返回里，调用方按"消息面暂无"处理。
+        """
+        now = self.clock()
+        since = now.date() - timedelta(days=ANN_LOOKBACK_DAYS)
+        by_code = self.fetcher.announcements_bulk(list(codes), since)
+        out = {}
+        for code, (anns, name) in by_code.items():
+            sources = {
+                "announcement": {"ok": True, "count": len(anns)},
+                "news": {"ok": False, "error": "批量扫描只看公告"},
+            }
+            out[code] = self._assemble(code, name, anns, sources, now)
+        return out
+
+    def _assemble(self, code, name, events, sources, now) -> Dict[str, Any]:
+        today = now.date()
         scored = [score_event(e, today, self.checker) for e in _dedupe(events)]
         scored.sort(key=lambda e: (e.get("published_at") or "", e.get("effective_date") or ""), reverse=True)
         agg = aggregate(scored)
@@ -599,7 +651,6 @@ class NewsCatalystService:
             "events": [_public(e) for e in scored],
             "sources": sources,
             "as_of": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "mode": "observe",
         }
 
     def radar(self) -> Dict[str, Any]:
@@ -660,3 +711,81 @@ __all__ = [
     "LEVEL_POINTS", "RULES", "SOURCE_WEIGHT", "NewsCatalystService", "NewsFetcher", "aggregate", "classify",
     "decay_factor", "reaction_date", "score_event", "sessions_elapsed",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 进程内共享：服务单例 + 缓存（接口、低吸引擎、龙头决策、扫描器共用，避免同一只票重复抓）
+# ---------------------------------------------------------------------------
+
+from single_flight_cache import SwrCache  # noqa: E402
+
+# 个股：10 分钟内直接用缓存，1 小时内先给旧值再后台刷新
+STOCK_CACHE = SwrCache(600, 3600)
+# 雷达：翻几十页全市场公告，10 分钟刷新一次，2 小时内都先给旧值
+RADAR_CACHE = SwrCache(600, 7200)
+
+_service: Optional[NewsCatalystService] = None
+_service_lock = threading.Lock()
+
+
+def get_service() -> NewsCatalystService:
+    global _service
+    with _service_lock:
+        if _service is None:
+            _service = NewsCatalystService()
+        return _service
+
+
+def set_service(service: Optional[NewsCatalystService]) -> None:
+    """测试用：注入假的数据源（传 None 恢复默认）。"""
+    global _service
+    with _service_lock:
+        _service = service
+
+
+def get_stock_news(code: str, name: str = "", refresh: bool = False) -> Tuple[Dict[str, Any], str]:
+    """返回 (个股消息面, 缓存状态 fresh/stale/built)。取不到时抛异常。"""
+    builder = lambda: get_service().stock(code, name)  # noqa: E731
+    if refresh:
+        data = builder()
+        STOCK_CACHE.put(code, data)
+        return data, "built"
+    return STOCK_CACHE.get(code, builder)
+
+
+def get_stock_news_safe(code: str, name: str = "") -> Optional[Dict[str, Any]]:
+    """给评分引擎用：取不到就返回 None（消息面维度显示"暂无"，不影响其他维度）。"""
+    try:
+        return get_stock_news(code, name)[0]
+    except Exception as exc:
+        logger.info(f"[news] {code} 消息面暂无：{exc}")
+        return None
+
+
+def get_stocks_news_bulk(codes: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """扫描用：已在缓存里（研报打开过）的直接用，其余批量只查公告。批量结果不写回缓存，免得研报里缺新闻。"""
+    out: Dict[str, Dict[str, Any]] = {}
+    missing = []
+    for code in codes:
+        hit = STOCK_CACHE.peek(code)
+        if hit is not None:
+            out[code] = hit
+        else:
+            missing.append(code)
+    if missing:
+        try:
+            fetched = get_service().stocks_from_announcements(missing)
+        except Exception as exc:
+            logger.warning(f"[news] 批量公告获取失败：{exc}")
+            fetched = {}
+        out.update(fetched)
+    return out
+
+
+def get_radar(refresh: bool = False) -> Tuple[Dict[str, Any], str]:
+    builder = lambda: get_service().radar()  # noqa: E731
+    if refresh:
+        data = builder()
+        RADAR_CACHE.put("radar", data)
+        return data, "built"
+    return RADAR_CACHE.get("radar", builder)

@@ -2,6 +2,7 @@
 # Merged features from IronTrader (Rule-based) and IronTrader2 (AI-based)
 
 import os
+import sys
 from flask import Flask
 
 from auth import init_auth
@@ -104,8 +105,14 @@ data_fetcher = decision_maker.data_fetcher
 logger.info("Global DataFetcher instance initialized (singleton pattern)")
 
 # 初始化并挂载各蓝图依赖
-init_market_routes(decision_maker, data_fetcher, _get_low_buy_engine)
-init_lowbuy_routes(lambda: data_fetcher)
+# 消息面（低吸第六维 / 龙头信心 / 研报）：单元测试下不接入，避免访问网络
+if 'pytest' in sys.modules or os.environ.get('IRONTRADER_NEWS', '1') == '0':
+    _news_lookup = _news_bulk = None
+else:
+    from news_catalyst import get_stock_news_safe as _news_lookup, get_stocks_news_bulk as _news_bulk
+
+init_market_routes(decision_maker, data_fetcher, _get_low_buy_engine, news_lookup=_news_lookup)
+init_lowbuy_routes(lambda: data_fetcher, news_provider=_news_lookup, news_bulk_provider=_news_bulk)
 init_hero_routes(lambda: data_fetcher)
 init_intraday_routes(data_fetcher)
 

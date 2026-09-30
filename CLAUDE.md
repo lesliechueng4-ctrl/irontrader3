@@ -25,7 +25,8 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `single_flight_cache.py` | `SingleFlightCache`（同 key 只构建一次）+ `SwrCache`（先给旧值、后台刷新） |
 | `api_response.py` | 统一响应 `ok()` / `fail()` |
 | `buyability.py` | 涨停股能否买进（一字/秒板/封死），龙头决策与作战台共用 |
-| `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达。**观察模式**，设计见 `docs/消息面权重设计.md` |
+| `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达、进程内共享缓存 |
+| `news_weighting.py` / `news_scanner.py` | 消息面计入低吸（第六维修正分）与龙头信心（方案 C）/ 消息催化扫描（方案 D）。设计见 `docs/消息面权重设计.md` |
 | `web/src/` | `pages/`（Dashboard / Scanners / Research / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
 | `tests/unit/` | 离线单元测试（CI 跑这些） |
 | `restart.ps1` / `一键重启服务.bat` | 作者日常用的重启脚本（UAC 提权、结束旧进程、后台启动、等待就绪、检查隧道） |
@@ -90,9 +91,14 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - **低吸看位置**：当日涨停、当日已涨 ≥5%、或离日线支撑 > 5% 时不给"低吸"结论。
 - 研报结论第一句写具体原因（`key_reason`），不要写"尚未形成可执行机会"这类套话。
 
-### 消息面（观察模式）
-- 目前只展示、只提醒，**不参与**统一结论、候选排序、执行闸。要接入（重大利空否决 / 加权进评分）属于策略取舍，
-  方案列在 `docs/消息面权重设计.md` 第 6 节，由作者决定，不要擅自接。
+### 消息面（作者选了方案 C + D）
+- **低吸**：第六维是非对称修正分（利空 ×0.25 最多扣 25、利好 ×0.08 最多加 8、当天已涨停或 ≥5% 不加分），
+  加在个股四维分上再乘情绪系数。**龙头**：只调信心星级（-2 ~ +1），不改变 BUY/IGNORE。
+- **没有一票否决（方案 B 未选）**，消息面也不进统一执行闸、不改作战台候选排序。要改这些先问作者。
+- 引擎的消息来源由 `app.py` 注入（`news_provider` / `news_lookup`）；pytest 下不注入，所以测试不会访问网络。
+  新测试要用消息面时，直接给 `analyze(..., news=...)` 传入，或 monkeypatch `market_routes._news_lookup`。
+- 消息催化扫描（`news_scanner.evaluate`）是纯函数，行情 / 涨停池 / 执行闸都从参数传入；
+  执行闸关闭时只能标"关注（执行闸暂停开仓）"，不能出现与首页矛盾的"可做"。
 - 调分类规则改 `news_catalyst.RULES`（顺序即优先级，带"终止/撤销"的反转规则要排在前面），并在
   `tests/unit/test_news_catalyst.py` 的标题用例表里补一行。
 - "进展 / 第 N 次风险提示"类公告会自动降为"一般"：旧事的例行提醒不能当重大新消息。
@@ -116,7 +122,8 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - 情绪"高潮"时仓位上限仍是满仓（总仓 100%、单票 30%）；回测显示一致板 3 日均值最差（约 -2.6%），
   是否下调由作者决定。
 - 暂不上云、暂不换 PostgreSQL；SQLite + 家里电脑满足当前规模。
-- 消息面接入方式（A 维持观察 / B 重大利空一票否决 / C 加权进评分 / D 消息驱动选股），见 `docs/消息面权重设计.md`。
+- 消息面：已接入 C（加权进评分）+ D（消息催化扫描）；B（重大利空一票否决）未选。权重是经验值，
+  等攒够事件样本做事件研究后再校准（`docs/消息面权重设计.md` 第 7 节）。
 
 ## 环境变量
 
@@ -127,6 +134,7 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 | `IRONTRADER_DATA_DIR` | 项目目录 | `users.json`、`.session_secret` 等运行时数据的位置 |
 | `IRONTRADER_PREWARM` | 1 | 设 0 关闭首页数据预热线程 |
 | `IRONTRADER_LIVE_TESTS` | 未设置 | 设 1 运行需要实时行情的测试 |
+| `IRONTRADER_NEWS` | 1 | 设 0 关闭消息面接入（低吸第六维、龙头信心、研报都按"暂无"处理） |
 | `LOG_RETENTION_DAYS` | 14 | 旧日志保留天数，0 关闭清理 |
 | `CORS_ALLOWED_ORIGINS` | 本机 + Vite | 允许跨域的来源 |
 

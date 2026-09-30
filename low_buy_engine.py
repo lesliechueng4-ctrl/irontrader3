@@ -1,6 +1,7 @@
 """
 低吸综合评分引擎 (维度⑥)
-整合5个维度的评分，输出加权综合分和一票否决判断
+整合5个维度的评分，输出加权综合分和一票否决判断；
+第六维"消息面"以非对称修正分计入（见 news_weighting.py）
 """
 
 import os
@@ -17,6 +18,7 @@ from technical_scorer import TechnicalScorer
 from fundamental_scorer import FundamentalScorer
 from logger_config import get_logger
 from sina_spot_client import SinaSpotClient
+from news_weighting import lowbuy_news_dimension
 
 logger = get_logger(__name__)
 
@@ -72,6 +74,12 @@ class LowBuyEngine:
         self._last_spot_frame_at = 0.0
         # 各决策意图的基准单票仓位（再由情绪单票上限裁剪）
         self.INTENDED_SINGLE = {'低吸': 0.20, '观察': 0.10}
+        # 消息面（第六维）：由应用启动时注入，未注入时该维度显示"暂无"、不加减分（测试默认如此）
+        #   news_provider(code, name) -> 个股消息面 dict 或 None
+        #   news_bulk_provider(codes) -> {code: 个股消息面}，全A扫描时一次批量取公告
+        self.news_provider = None
+        self.news_bulk_provider = None
+        self._scan_news = None  # 扫描期间的批量结果
 
     def _get_emotion(self) -> dict:
         """获取全局情绪过滤结果（5 分钟内复用缓存）。任何异常都降级为 None，不影响主流程。"""
@@ -100,7 +108,20 @@ class LowBuyEngine:
         self._emotion_cached_at = now
         return self._cached_emotion
 
+    def _lookup_news(self, code: str, name: str):
+        scan_news = getattr(self, "_scan_news", None)  # 测试里可能用 __new__ 构造、没有这些属性
+        if scan_news is not None:
+            return scan_news.get(code)
+        provider = getattr(self, "news_provider", None)
+        if provider:
+            try:
+                return provider(code, name)
+            except Exception as e:
+                logger.info(f"消息面获取失败 {code}: {e}")
+        return None
+
     def _clear_scan_realtime_snapshot(self):
+        self._scan_news = None
         try:
             fetcher = getattr(self, "fetcher", None)
             clear_snapshot = getattr(fetcher, "clear_stock_realtime_snapshot", None)
@@ -122,6 +143,7 @@ class LowBuyEngine:
         stock_code: str,
         stock_sector: str = None,
         emotion_snapshot: dict = None,
+        news: dict = None,
     ) -> dict:
         """
         对单只股票进行完整的低吸分析
@@ -205,10 +227,15 @@ class LowBuyEngine:
             scores[k] * self.STOCK_WEIGHTS[k] for k in self.STOCK_WEIGHTS
         )
 
+        # === 维度⑥ 消息面：非对称修正分（利空重扣、利好轻加、利好已兑现不加）===
+        news_data = news if news is not None else self._lookup_news(clean_code, stock_name)
+        news_dim = lowbuy_news_dimension(news_data, realtime)
+        adjusted_stock_score = max(0.0, stock_score + news_dim['adjustment'])
+
         # 市场情绪作为环境系数（仓位调节器）：冰点(高分)上浮、退潮(低分)压制，
         # 幅度限定在 ±15%，对个股的区分度不再被情绪淹没
         sentiment_coef = self._sentiment_coefficient(sentiment_result['score'])
-        total_score = stock_score * sentiment_coef
+        total_score = adjusted_stock_score * sentiment_coef
 
         # === 一票否决 ===
         veto, veto_reason = self._check_veto(
@@ -301,13 +328,18 @@ class LowBuyEngine:
                 'valuation': fundamental_result.get('valuation', {}),
                 'institution': fundamental_result.get('institution', {}),
             },
+            'news': {
+                'role': 'adjustment',  # 修正分，直接加到个股四维分上
+                **news_dim,
+            },
         }
 
         return {
             'stock_code': clean_code,
             'stock_name': stock_name,
             'total_score': round(total_score, 1),
-            'stock_score': round(stock_score, 1),        # 个股四维分（未乘情绪系数）
+            'stock_score': round(stock_score, 1),        # 个股四维分（未乘情绪系数、未计消息面）
+            'news_adjustment': news_dim['adjustment'],   # 消息面修正分（已计入 total_score）
             'sentiment_coef': round(sentiment_coef, 3),  # 市场情绪环境系数
             'decision': decision,
             'veto_triggered': veto,
@@ -587,6 +619,21 @@ class LowBuyEngine:
                 self._preload_shared_data(candidates)
             except Exception as e:
                 logger.warning(f"预加载失败（不影响扫描）: {e}")
+            try:
+                ensure_not_cancelled()
+            except Exception:
+                self._clear_scan_realtime_snapshot()
+                raise
+
+        # Step 2.6: 消息面（第六维）：批量取候选的近 30 天公告，评分时直接用
+        if candidates and getattr(self, "news_bulk_provider", None):
+            emit_progress(phase="消息面", message=f"正在批量获取 {len(candidates)} 只候选的公告...",
+                          done=0, total=0, matched=0, errors=0)
+            try:
+                self._scan_news = self.news_bulk_provider(candidates) or {}
+            except Exception as e:
+                logger.warning(f"批量获取消息面失败（该维度按暂无处理）: {e}")
+                self._scan_news = {}
             try:
                 ensure_not_cancelled()
             except Exception:

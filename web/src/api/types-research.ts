@@ -152,9 +152,32 @@ export interface DragonResult {
   stock_info?: { code?: string; name?: string; price?: number; change_pct?: number; is_limit_up?: boolean };
   chip_quality?: ChipQuality;
   emotion_gate?: EmotionGate;
+  /** 消息面对龙头信心的影响（只调星级，不改决策） */
+  news_effect?: {
+    available: boolean;
+    delta: number;
+    note: string;
+    confidence_before?: number;
+    confidence_after?: number;
+    catalysts: { type: string; type_label: string; title?: string; url?: string }[];
+    risks: { type: string; type_label: string; title?: string; url?: string; weight: number }[];
+  };
+}
+
+/** 低吸第六维：消息面修正分（利空重扣、利好轻加、利好已兑现不加） */
+export interface LowbuyNewsDim {
+  available: boolean;
+  score?: number | null;
+  label?: string;
+  adjustment: number;
+  priced_in: boolean;
+  note: string;
+  summary?: string;
+  announcements_only?: boolean;
 }
 
 export interface LowbuyDimensions {
+  news?: LowbuyNewsDim;
   sentiment?: { score?: number; phase?: string; coefficient?: number };
   sector?: { score?: number; weighted?: number; status?: string; sector_name?: string };
   fund?: {
@@ -204,6 +227,8 @@ export interface LowbuyResult {
   total_score?: number;
   stock_score?: number;
   sentiment_coef?: number;
+  /** 消息面修正分（已计入 total_score） */
+  news_adjustment?: number;
   decision?: '低吸' | '观察' | '等待' | '回避' | string;
   veto_triggered?: boolean;
   veto_reason?: string | null;

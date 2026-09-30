@@ -9,6 +9,7 @@ import type {
   ConclusionStatus,
   DragonResult,
   EmotionGate,
+  LowbuyNewsDim,
   LowbuyResult,
   SourceHealth,
 } from '../../api/types-research';
@@ -50,7 +51,7 @@ export function ConclusionCard({
   newsAlerts,
 }: {
   data: AnalyzeResult;
-  /** 消息面的重大事件（观察模式，只提醒，不参与结论） */
+  /** 消息面的重大事件（已按权重计入低吸与龙头信心，这里只做醒目提示） */
   newsAlerts?: NewsEvent[];
   code: string;
   name: string;
@@ -130,7 +131,7 @@ export function ConclusionCard({
               </span>
             );
           })}
-          <span className="muted">（观察，未计入上面的结论，详情见下方消息面）</span>
+          <span className="muted">（已按权重计入低吸评分和龙头信心，不做一票否决；详情见下方消息面）</span>
         </div>
       )}
       <div className="conclusion-facts">
@@ -211,6 +212,17 @@ function GateChip({ gate }: { gate?: EmotionGate | null }) {
   );
 }
 
+function NewsDimLine({ dim }: { dim: LowbuyNewsDim }) {
+  const color = !dim.available ? C.text3 : dim.adjustment < 0 ? C.down : dim.adjustment > 0 ? C.up : dim.priced_in ? C.warn : C.text2;
+  return (
+    <div className="news-dim-line">
+      <b>第六维 · 消息面</b>
+      <span style={{ color }}>{dim.note}</span>
+      {dim.available && dim.announcements_only && <span className="muted small">（仅公告）</span>}
+    </div>
+  );
+}
+
 export function LowbuyCard({ lowbuy, error }: { lowbuy?: LowbuyResult | null; error?: string }) {
   const palette = usePalette();
   const dims = lowbuy?.dimensions ?? {};
@@ -240,7 +252,7 @@ export function LowbuyCard({ lowbuy, error }: { lowbuy?: LowbuyResult | null; er
 
   return (
     <Card
-      title="低吸策略 · 五维评分"
+      title="低吸策略 · 五维评分 + 消息修正"
       extra={
         <span className="card-title-row">
           <GateChip gate={lowbuy.emotion_gate} />
@@ -256,9 +268,11 @@ export function LowbuyCard({ lowbuy, error }: { lowbuy?: LowbuyResult | null; er
           {lowbuy.decision ?? '-'}
         </span>
         {lowbuy.sentiment_coef != null && (
-          <Tooltip title="市场情绪不参与加权，而是作为环境系数：冰点上浮、退潮压制，幅度 ±15%">
+          <Tooltip title="市场情绪不参与加权，而是作为环境系数：冰点上浮、退潮压制，幅度 ±15%；消息面是加在个股分上的修正分">
             <span className="muted small">
-              个股分 {lowbuy.stock_score?.toFixed(1) ?? '--'} × 情绪系数 {lowbuy.sentiment_coef}
+              (个股分 {lowbuy.stock_score?.toFixed(1) ?? '--'}
+              {lowbuy.news_adjustment ? ` ${lowbuy.news_adjustment > 0 ? '+' : '−'} 消息 ${Math.abs(lowbuy.news_adjustment).toFixed(1)}` : ''}
+              ) × 情绪系数 {lowbuy.sentiment_coef}
             </span>
           </Tooltip>
         )}
@@ -269,6 +283,7 @@ export function LowbuyCard({ lowbuy, error }: { lowbuy?: LowbuyResult | null; er
       {lowbuy.veto_triggered && (
         <Alert type="error" showIcon className="lowbuy-veto" message={`一票否决：${lowbuy.veto_reason ?? ''}`} />
       )}
+      {dims.news && <NewsDimLine dim={dims.news} />}
       <div className="lowbuy-body">
         <ReactECharts option={option} style={{ height: 220, width: '100%' }} notMerge />
         <div className="dim-list">
@@ -475,6 +490,20 @@ export function DragonCard({ dragon, error, finalExecutable }: { dragon?: Dragon
         <GateChip gate={dragon.emotion_gate} />
       </div>
       <div className="dragon-reason">{dragon.reason}</div>
+      {dragon.news_effect?.available && (
+        <div className="news-dim-line">
+          <b>消息面</b>
+          <span
+            style={{
+              color: dragon.news_effect.delta > 0 ? C.up : dragon.news_effect.delta < 0 ? C.down : C.text2,
+            }}
+          >
+            {dragon.news_effect.note}
+            {dragon.news_effect.confidence_after != null &&
+              `（信心 ${dragon.news_effect.confidence_before} → ${dragon.news_effect.confidence_after}）`}
+          </span>
+        </div>
+      )}
       {dragon.risk_warning && <Alert type="warning" showIcon className="dragon-warning" message={dragon.risk_warning} />}
       <ChipQualityBlock chip={dragon.chip_quality} />
       <div className="muted small detail-foot">是否执行只看上方统一结论；这里是龙头战法自己的判断依据。</div>

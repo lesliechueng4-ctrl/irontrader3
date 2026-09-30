@@ -60,6 +60,7 @@ _SCAN_START_PATHS = (
     "/api/scanners/limit-down-rebound/start",
     "/api/hero/scan/start",
     "/api/lowbuy/candidates/start",
+    "/api/news/catalyst/start",
 )
 
 # 同步跑全市场的旧接口、回测、批量分析：只给管理员（新版界面不直接调用它们）
@@ -91,7 +92,7 @@ def classify(method: str, path: str, args) -> Optional[str]:
         return "analyze"
     if path == "/api/search":
         return "search"
-    if path.startswith("/api/news/") and path != "/api/news/radar":
+    if path.startswith("/api/news/") and path not in ("/api/news/radar", "/api/news/catalyst/start"):
         return "news"
     return "api"
 

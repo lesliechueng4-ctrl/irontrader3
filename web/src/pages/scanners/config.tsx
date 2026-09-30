@@ -1,11 +1,18 @@
-// 五种扫描器的定义：启动地址、用到哪些设置、结果怎么展示。
+// 六种扫描器的定义：启动地址、用到哪些设置、结果怎么展示。
 import { Tag } from 'antd';
 import { changeColor, C } from '../../theme';
 import type { DataColumn } from '../../components/DataTable';
 import { numericOf } from '../../components/DataTable';
 import type { Hero, LowbuyResult, ScanMeta, ScanRow } from '../../api/types-research';
+import type { NewsCatalystRow } from '../../api/types-news';
 
-export type ScannerKey = 'lowbuy_candidates' | 'wash_pattern' | 'breakout_base' | 'limit_down_rebound' | 'hero_scan';
+export type ScannerKey =
+  | 'news_catalyst'
+  | 'lowbuy_candidates'
+  | 'wash_pattern'
+  | 'breakout_base'
+  | 'limit_down_rebound'
+  | 'hero_scan';
 
 export interface ScanSettings {
   pool: 'all_a' | 'hs300' | 'zz500';
@@ -34,6 +41,14 @@ const qs = (o: Record<string, unknown>) =>
     .join('&');
 
 export const SCANNERS: ScannerDef[] = [
+  {
+    key: 'news_catalyst',
+    title: '消息催化',
+    desc: '重大消息雷达里的利好，逐只核对停牌、一字、已兑现、利好不涨、是否主线和执行闸，分成关注 / 等待 / 已兑现 / 市场不认 / 买不进。',
+    uses: [],
+    params: () => ({}),
+    startUrl: () => '/api/news/catalyst/start',
+  },
   {
     key: 'lowbuy_candidates',
     title: '低吸候选',
@@ -237,6 +252,22 @@ export const LOWBUY_COLUMNS: DataColumn<LowbuyResult>[] = [
       </span>
     ),
   },
+  {
+    key: 'news',
+    title: '消息',
+    value: (r) => r.news_adjustment ?? 0,
+    render: (r) => {
+      const n = r.dimensions?.news;
+      if (!n?.available) return <span className="muted">暂无</span>;
+      const v = r.news_adjustment ?? 0;
+      return (
+        <span title={n.note} style={{ color: v < 0 ? C.down : v > 0 ? C.up : n.priced_in ? C.warn : C.text3 }}>
+          {v ? `${v > 0 ? '+' : ''}${v.toFixed(1)}` : n.priced_in ? '已兑现' : '0'}
+        </span>
+      );
+    },
+    type: 'number',
+  },
   { key: 'phase', title: '低吸周期', value: (r) => r.dimensions?.sentiment?.phase },
   { key: 'sector', title: '板块', value: (r) => r.dimensions?.sector?.status },
   { key: 'fund', title: '资金', value: (r) => r.dimensions?.fund?.signal },
@@ -262,4 +293,92 @@ export const HERO_COLUMNS: DataColumn<Hero>[] = [
     type: 'number',
   },
   { key: 'rs', title: '近10日%', value: (r) => r.relative_strength, render: (r) => pctCell(r.relative_strength), type: 'number' },
+];
+
+// 消息催化：关注 / 等待 / 已兑现 / 买不进
+const CATALYST_TONE: Record<NewsCatalystRow['status'], 'buy' | 'ok' | 'warn' | 'crit' | 'none'> = {
+  focus: 'buy',
+  wait: 'warn',
+  priced_in: 'none',
+  rejected: 'crit',
+  blocked: 'none',
+};
+export const catalystTone = (r: NewsCatalystRow) => CATALYST_TONE[r.status];
+
+const CATALYST_COLOR: Record<NewsCatalystRow['status'], string> = {
+  focus: C.buy,
+  wait: C.warn,
+  priced_in: C.text3,
+  rejected: C.down,
+  blocked: C.text3,
+};
+
+export const CATALYST_COLUMNS: DataColumn<NewsCatalystRow>[] = [
+  { key: 'code', title: '代码', value: (r) => r.code, type: 'string' },
+  { key: 'name', title: '名称', value: (r) => r.name },
+  {
+    key: 'status',
+    title: '结论',
+    value: (r) => r.status_label,
+    render: (r) => (
+      <b className="decision-text" style={{ color: CATALYST_COLOR[r.status] }}>
+        {r.status_label}
+      </b>
+    ),
+  },
+  {
+    key: 'event',
+    title: '消息',
+    value: (r) => r.event_label,
+    render: (r) => (
+      <span>
+        <span style={{ color: C.up, fontWeight: r.level === 'major' ? 600 : 400 }}>{r.level_label}</span> {r.event_label}
+      </span>
+    ),
+  },
+  { key: 'timing', title: '时点', value: (r) => r.timing },
+  { key: 'chg', title: '今日%', value: (r) => r.change_pct, render: (r) => pctCell(r.change_pct), type: 'number' },
+  {
+    key: 'sector',
+    title: '行业 · 今日涨停',
+    value: (r) => r.sector_limit_ups,
+    render: (r) =>
+      r.sector ? (
+        <span style={{ color: r.mainline ? C.text : C.text3 }}>
+          {r.sector} · {r.sector_limit_ups}
+          {r.mainline ? ' · 主线' : ''}
+        </span>
+      ) : (
+        <span className="muted">未知</span>
+      ),
+    type: 'number',
+  },
+  {
+    key: 'why',
+    title: '依据 / 阻碍',
+    value: (r) => [...r.blockers, ...r.reasons].join('；'),
+    render: (r) => (
+      <span title={[...r.blockers, ...r.reasons].join('\n')}>
+        {r.blockers.length > 0 && <span style={{ color: C.warn }}>{r.blockers[0]}；</span>}
+        {r.reasons[0]}
+      </span>
+    ),
+    ellipsis: true,
+    width: 320,
+  },
+  {
+    key: 'title',
+    title: '公告',
+    value: (r) => r.title,
+    render: (r) =>
+      r.url ? (
+        <a href={r.url} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>
+          {r.title}
+        </a>
+      ) : (
+        r.title
+      ),
+    ellipsis: true,
+    width: 260,
+  },
 ];

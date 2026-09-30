@@ -13,7 +13,7 @@ type Filter = 'mine' | 'up' | 'down' | 'all';
 
 /**
  * 重大消息雷达：全市场"还没被交易 / 正在被交易"的公告里，挑出重大、显著的事件。
- * 命中自选股或今日候选的排在最前面。观察用，不改变任何候选或结论。
+ * 命中自选股或今日候选的排在最前面。雷达本身只提醒；利好的可操作性见选股雷达「消息催化」。
  */
 export default function NewsRadarCard() {
   const radar = useNewsRadar();
@@ -52,7 +52,7 @@ export default function NewsRadarCard() {
   return (
     <Card
       title={
-        <Tooltip title="全市场公告里的重大 / 显著事件，只看还没被交易或今天正在被交易的。观察用，不改变候选和结论。">
+        <Tooltip title="全市场公告里的重大 / 显著事件，只看还没被交易或今天正在被交易的。想知道哪些能做，跑选股雷达里的「消息催化」。">
           <span>重大消息雷达</span>
         </Tooltip>
       }

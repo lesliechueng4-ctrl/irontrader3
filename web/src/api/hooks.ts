@@ -162,7 +162,7 @@ export function useIsOwner(): boolean {
   return useMe().data?.role === 'owner';
 }
 
-// ---- 消息面（观察模式）----
+// ---- 消息面 ----
 export function useStockNews(code: string | null, name?: string) {
   return useQuery({
     queryKey: ['stock-news', code],

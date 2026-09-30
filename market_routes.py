@@ -13,6 +13,7 @@ from logger_config import get_logger
 from research_conclusion import build_final_conclusion
 from single_flight_cache import SingleFlightCache, SwrCache
 from api_response import ok
+from news_weighting import apply_dragon_news
 from workbench_service import (
     apply_candidate_risk_precheck,
     build_execution_context,
@@ -26,13 +27,15 @@ market_bp = Blueprint("market_routes", __name__)
 decision_maker = None
 data_fetcher = None
 _get_low_buy_engine_fn = None
+_news_lookup = None  # (code, name) -> 个股消息面 or None；未注入时研报不计消息面
 
 
-def init_market_routes(dm, df, get_low_buy_engine_fn=None):
-    global decision_maker, data_fetcher, _get_low_buy_engine_fn
+def init_market_routes(dm, df, get_low_buy_engine_fn=None, news_lookup=None):
+    global decision_maker, data_fetcher, _get_low_buy_engine_fn, _news_lookup
     decision_maker = dm
     data_fetcher = df
     _get_low_buy_engine_fn = get_low_buy_engine_fn
+    _news_lookup = news_lookup
 
 
 # 市场情绪过滤器（懒加载单例，复用全局 DataFetcher）
@@ -309,6 +312,21 @@ def unified_analyze(code):
     raise_if_invalid_stock_code(code)
     dragon, lowbuy, emotion, errors = None, None, None, {}
 
+    # 消息面与两个引擎并行抓取；取不到时两边都按"消息面暂无"处理
+    news_future, news_pool = None, None
+    if _news_lookup:
+        news_pool = ThreadPoolExecutor(max_workers=1)
+        news_future = news_pool.submit(_news_lookup, code, request.args.get('name', ''))
+
+    def _news():
+        if not news_future:
+            return None
+        try:
+            return news_future.result(timeout=30)
+        except Exception as e:
+            logger.info(f"统一分析-消息面暂无 {code}: {e}")
+            return None
+
     try:
         emotion = _get_emotion_result()
     except Exception as e:
@@ -330,12 +348,17 @@ def unified_analyze(code):
         engine_getter = _get_low_buy_engine_fn
         engine = engine_getter() if engine_getter else None
         if engine:
-            lowbuy = engine.analyze(code, emotion_snapshot=emotion)
+            lowbuy = engine.analyze(code, emotion_snapshot=emotion, news=_news() if _news_lookup else None)
             if isinstance(lowbuy, dict) and (lowbuy.get('data_error') or lowbuy.get('error')):
                 errors['lowbuy'] = str(lowbuy.get('error') or lowbuy.get('error_code') or '低吸数据不可用')
     except Exception as e:
         logger.error(f"统一分析-低吸引擎失败 {code}: {e}")
         errors['lowbuy'] = str(e)
+
+    if news_pool:
+        news_pool.shutdown(wait=False)
+    if isinstance(dragon, dict) and _news_lookup:
+        dragon = apply_dragon_news(dragon, _news())
 
     if dragon is None and lowbuy is None:
         return jsonify({'success': False, 'error': f"分析失败: {errors}"}), 500
