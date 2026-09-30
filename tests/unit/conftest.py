@@ -4,6 +4,7 @@ import pytest
 import backtest_routes
 import lowbuy_routes
 import market_routes
+import news_routes
 import scanner_routes
 from task_manager import TaskManager
 
@@ -20,8 +21,9 @@ def isolated_task_store(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def fresh_dashboard_cache():
     """首页共享缓存跨测试会串数据：每个测试前后清空。"""
-    market_routes.DASHBOARD_CACHE.clear()
-    lowbuy_routes._SHARED.clear()
+    caches = (market_routes.DASHBOARD_CACHE, lowbuy_routes._SHARED, news_routes.STOCK_CACHE, news_routes.RADAR_CACHE)
+    for cache in caches:
+        cache.clear()
     yield
-    market_routes.DASHBOARD_CACHE.clear()
-    lowbuy_routes._SHARED.clear()
+    for cache in caches:
+        cache.clear()

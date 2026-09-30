@@ -14,6 +14,7 @@ from intraday_routes import init_intraday_routes, intraday_bp
 from logger_config import cleanup_legacy_logs, get_logger
 from lowbuy_routes import _get_low_buy_engine, init_lowbuy_routes, lowbuy_bp
 from market_routes import init_market_routes, market_bp
+from news_routes import news_bp
 from rate_limit import init_rate_limit
 from runtime_paths import application_data_dir, application_resource_dir
 from scanner_routes import scanner_bp
@@ -115,6 +116,7 @@ app.register_blueprint(lowbuy_bp)
 app.register_blueprint(hero_bp)
 app.register_blueprint(backtest_bp)
 app.register_blueprint(intraday_bp)
+app.register_blueprint(news_bp)
 
 # 启动后台定时清理过期缓存（每30分钟执行一次）
 try:

@@ -3,9 +3,11 @@ import { Alert, Skeleton } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { get } from '../api/client';
+import { useStockNews } from '../api/hooks';
 import type { AnalyzeResult, Candle } from '../api/types-research';
 import StockSearch from '../components/StockSearch';
 import { useStoredJson } from '../utils/storage';
+import NewsCard from './research/NewsCard';
 import { ConclusionCard, DetailCards, DragonCard, KlineCard, LowbuyCard, SourceHealthRow } from './research/Panels';
 
 interface Props {
@@ -46,6 +48,7 @@ export default function Research({ onOpenStock }: Props) {
     retry: false,
   });
 
+  const news = useStockNews(code, params.get('sname') ?? undefined);
   const data = analyze.data;
   const candles = kline.data?.candles ?? [];
   const lastCandle = candles[candles.length - 1];
@@ -123,11 +126,13 @@ export default function Research({ onOpenStock }: Props) {
               kline.refetch();
             }}
             onIntraday={() => onOpenStock(code, name)}
+            newsAlerts={news.data?.data.alerts}
             lastClose={lastCandle?.close}
             lastChange={
               lastCandle && prevCandle ? ((lastCandle.close - prevCandle.close) / prevCandle.close) * 100 : undefined
             }
           />
+          <NewsCard code={code} name={params.get('sname') ?? undefined} />
           <div className="research-row">
             <KlineCard
               candles={kline.data?.candles}

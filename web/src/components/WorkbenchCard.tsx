@@ -1,6 +1,7 @@
 import { App, Button, Card, Collapse, Empty, Skeleton, Tag } from 'antd';
-import { ReloadOutlined, RightOutlined } from '@ant-design/icons';
-import { useIsOwner, useRebuildWorkbench, useWorkbench } from '../api/hooks';
+import { NotificationOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
+import { useIsOwner, useNewsRadar, useRebuildWorkbench, useWorkbench } from '../api/hooks';
+import { directionMeta } from './news/shared';
 import type { WorkbenchStock } from '../api/types';
 
 interface Props {
@@ -127,6 +128,10 @@ function Candidate({
   onOpen: (code: string, name?: string) => void;
 }) {
   const open = () => s.code && onOpen(s.code, s.name);
+  // 重大消息雷达命中这只候选时提示一句（观察用，不改变候选排序）
+  const radar = useNewsRadar();
+  const news = (radar.data?.data.events ?? []).find((e) => e.code === s.code);
+  const newsDir = news ? directionMeta(news.direction) : null;
   return (
     <div
       className="candidate-item"
@@ -143,6 +148,12 @@ function Candidate({
         </small>
         <div className="candidate-reasons">{(s.reasons ?? []).slice(0, 3).join(' · ') || '等待进一步验证'}</div>
         {s.blockers?.length ? <div className="candidate-blocker">{s.blockers[0]}</div> : null}
+        {news && newsDir && (
+          <div className="candidate-news" style={{ color: newsDir.color }} title={news.title}>
+            <NotificationOutlined /> {news.level_label}
+            {newsDir.text}：{news.type_label}
+          </div>
+        )}
       </span>
       <span className="candidate-go">
         分时 <RightOutlined />

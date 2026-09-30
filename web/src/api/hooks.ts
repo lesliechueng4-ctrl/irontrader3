@@ -15,6 +15,7 @@ import type {
   Sentiment,
   Workbench,
 } from './types';
+import type { NewsRadar, StockNews } from './types-news';
 
 // React Query 默认 refetchIntervalInBackground:false —— 标签页隐藏即暂停轮询
 const DASH = 30_000;
@@ -159,4 +160,27 @@ export function useMe() {
 
 export function useIsOwner(): boolean {
   return useMe().data?.role === 'owner';
+}
+
+// ---- 消息面（观察模式）----
+export function useStockNews(code: string | null, name?: string) {
+  return useQuery({
+    queryKey: ['stock-news', code],
+    queryFn: () =>
+      getWithMeta<StockNews>(`/api/news/${code}${name ? `?name=${encodeURIComponent(name)}` : ''}`, 60_000),
+    enabled: !!code,
+    staleTime: 300_000,
+    retry: false,
+  });
+}
+
+/** 全市场重大消息雷达：公告多在盘后发布，所以非交易时段也要轮询（10 分钟一次） */
+export function useNewsRadar() {
+  return useQuery({
+    queryKey: ['news-radar'],
+    queryFn: () => getWithMeta<NewsRadar>('/api/news/radar', 120_000),
+    staleTime: 300_000,
+    refetchInterval: 600_000,
+    retry: 1,
+  });
 }

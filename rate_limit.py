@@ -13,8 +13,9 @@
 | analyze   | 单票研报 /api/analyze、个股决策                  | 每分钟 10 次、每天 200 次  |
 | refresh   | 带 refresh=1 的强制刷新                          | 每分钟 2 次                |
 | search    | 股票搜索联想                                     | 每分钟 60 次               |
+| news      | 个股消息面 /api/news/<code>                      | 每分钟 20 次、每天 300 次  |
 | api       | 其余接口（页面轮询等）                           | 每分钟 300 次              |
-| 管理员专属 | 启动回测、重建作战台候选、同步版扫描/批量分析接口 | 不允许                     |
+| 管理员专属 | 启动回测、重建作战台候选、强制重扫消息雷达、同步版扫描/批量分析接口 | 不允许 |
 
 同一台电脑上的多标签页算同一个人（按用户计数，不按 IP）。
 """
@@ -41,6 +42,7 @@ MEMBER_LIMITS: Dict[str, List[Tuple[int, int]]] = {
     "analyze": [(10, MINUTE), (200, DAY)],
     "refresh": [(2, MINUTE)],
     "search": [(60, MINUTE)],
+    "news": [(20, MINUTE), (300, DAY)],
     "api": [(300, MINUTE)],
 }
 # 管理员只防误触 / 脚本失控
@@ -49,6 +51,7 @@ OWNER_LIMITS: Dict[str, List[Tuple[int, int]]] = {
     "analyze": [(60, MINUTE)],
     "refresh": [(20, MINUTE)],
     "search": [(120, MINUTE)],
+    "news": [(60, MINUTE)],
     "api": [(1200, MINUTE)],
 }
 
@@ -88,6 +91,8 @@ def classify(method: str, path: str, args) -> Optional[str]:
         return "analyze"
     if path == "/api/search":
         return "search"
+    if path.startswith("/api/news/") and path != "/api/news/radar":
+        return "news"
     return "api"
 
 
@@ -97,6 +102,8 @@ def owner_only(method: str, path: str, args) -> Optional[str]:
         return "这个操作只有管理员可以执行"
     if path == "/api/today-workbench" and args.get("refresh") == "1":
         return "重建作战台候选需要几十秒、会拉取大量行情，只有管理员可以执行"
+    if path == "/api/news/radar" and args.get("refresh") == "1":
+        return "强制重扫全市场公告要翻几十页，只有管理员可以执行"
     return None
 
 
@@ -197,7 +204,7 @@ def init_rate_limit(app: Flask) -> SlidingWindowLimiter:
             limit, window, wait = hit
             audit("rate_limited", path=path, category=category, limit=f"{limit}/{window}s")
             wait_text = f"{wait} 秒" if wait < 120 else f"{wait // 60} 分钟"
-            label = {"scan": "扫描", "analyze": "个股研究", "refresh": "强制刷新", "search": "搜索"}.get(category, "请求")
+            label = {"scan": "扫描", "analyze": "个股研究", "refresh": "强制刷新", "search": "搜索", "news": "消息面查询"}.get(category, "请求")
             resp = jsonify({
                 "success": False,
                 "error": f"{label}太频繁：{_WINDOW_LABEL.get(window, '')}最多 {limit} 次，请 {wait_text}后再试",

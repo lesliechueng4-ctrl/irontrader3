@@ -12,6 +12,8 @@ import type {
   LowbuyResult,
   SourceHealth,
 } from '../../api/types-research';
+import type { NewsEvent } from '../../api/types-news';
+import { directionMeta } from '../../components/news/shared';
 import { usePalette } from '../../ThemeContext';
 import { C, changeColor, fmtYi, STATUS_BG, STATUS_COLOR, type Status } from '../../theme';
 import { useWatchlist } from '../../utils/storage';
@@ -45,8 +47,11 @@ export function ConclusionCard({
   onIntraday,
   lastClose,
   lastChange,
+  newsAlerts,
 }: {
   data: AnalyzeResult;
+  /** 消息面的重大事件（观察模式，只提醒，不参与结论） */
+  newsAlerts?: NewsEvent[];
   code: string;
   name: string;
   fetching: boolean;
@@ -113,6 +118,20 @@ export function ConclusionCard({
               <li key={i}>{b.message || b.code}</li>
             ))}
         </ul>
+      )}
+      {(newsAlerts ?? []).length > 0 && (
+        <div className="conclusion-news">
+          <b>消息面提醒</b>
+          {(newsAlerts ?? []).slice(0, 2).map((e, i) => {
+            const d = directionMeta(e.direction);
+            return (
+              <span key={i} style={{ color: d.color }}>
+                重大{d.text}：{e.type_label}
+              </span>
+            );
+          })}
+          <span className="muted">（观察，未计入上面的结论，详情见下方消息面）</span>
+        </div>
       )}
       <div className="conclusion-facts">
         <span>

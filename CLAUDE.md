@@ -1,6 +1,6 @@
 # IronTrader3 · 给 AI 编码助手的项目说明
 
-A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日内高抛低吸 / 选股扫描 / 回测）。
+A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日内高抛低吸 / 选股扫描 / 回测 / 消息面）。
 个人项目，跑在作者家里的 Windows 电脑上，经 Cloudflare 隧道以 https://irontrader.asia 给几个朋友使用。
 **它只做研究辅助，不下单、不连券商。**
 
@@ -14,7 +14,7 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | 位置 | 作用 |
 |---|---|
 | `app.py` | Flask 入口：注册蓝图、鉴权、限流、安全响应头、前端路由、首页数据预热线程 |
-| `*_routes.py` | 蓝图：`market_routes`（大屏/研报/作战台）、`scanner_routes`、`hero_routes`、`lowbuy_routes`、`intraday_routes`、`backtest_routes` |
+| `*_routes.py` | 蓝图：`market_routes`（大屏/研报/作战台）、`scanner_routes`、`hero_routes`、`lowbuy_routes`、`intraday_routes`、`backtest_routes`、`news_routes` |
 | `auth.py` / `rate_limit.py` | 账号密码登录、角色、账号管理接口 / 按用户限流与管理员专属操作 |
 | `workbench_service.py` | 今日作战台候选 + **统一执行闸** `build_execution_context()` |
 | `research_conclusion.py` | 单票研报的统一结论（龙头 + 低吸 + 执行闸 → 一个结论和 `key_reason`） |
@@ -25,6 +25,7 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `single_flight_cache.py` | `SingleFlightCache`（同 key 只构建一次）+ `SwrCache`（先给旧值、后台刷新） |
 | `api_response.py` | 统一响应 `ok()` / `fail()` |
 | `buyability.py` | 涨停股能否买进（一字/秒板/封死），龙头决策与作战台共用 |
+| `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达。**观察模式**，设计见 `docs/消息面权重设计.md` |
 | `web/src/` | `pages/`（Dashboard / Scanners / Research / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
 | `tests/unit/` | 离线单元测试（CI 跑这些） |
 | `restart.ps1` / `一键重启服务.bat` | 作者日常用的重启脚本（UAC 提权、结束旧进程、后台启动、等待就绪、检查隧道） |
@@ -72,6 +73,7 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - 组件里不写十六进制色值：CSS 用 `var(--it-xxx)`，内联用 `theme.ts` 的 `C.xxx`，ECharts 用 `usePalette()`。
 - 四套语义互不借用：品牌色（钢蓝，交互）/ 方向色 `C.up`/`C.down`（**A 股红涨绿跌**，只用于价格与资金方向）/
   状态色 `STATUS_COLOR`（ok/warn/crit，阈值判断）/ 信号色 `C.buy`（低吸，琥珀）/ `C.sell`（高抛，紫）。
+- 消息面的利好/利空表示"预期推动股价的方向"，沿用方向色 `C.up`/`C.down`；方向需看正文的用 `C.warn`（`components/news/shared.tsx`）。
 
 ### 三个"周期"不是一回事
 口径不同、用途不同，界面上并列展示，**任何地方都不要只写"周期"而不说明是哪一个**：
@@ -87,6 +89,14 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - **买不进的票不进优先关注**：盘中一字板 / 秒板 / 封死（换手 < 1%）用 `buyability.check_limit_buyability` 判断。
 - **低吸看位置**：当日涨停、当日已涨 ≥5%、或离日线支撑 > 5% 时不给"低吸"结论。
 - 研报结论第一句写具体原因（`key_reason`），不要写"尚未形成可执行机会"这类套话。
+
+### 消息面（观察模式）
+- 目前只展示、只提醒，**不参与**统一结论、候选排序、执行闸。要接入（重大利空否决 / 加权进评分）属于策略取舍，
+  方案列在 `docs/消息面权重设计.md` 第 6 节，由作者决定，不要擅自接。
+- 调分类规则改 `news_catalyst.RULES`（顺序即优先级，带"终止/撤销"的反转规则要排在前面），并在
+  `tests/unit/test_news_catalyst.py` 的标题用例表里补一行。
+- "进展 / 第 N 次风险提示"类公告会自动降为"一般"：旧事的例行提醒不能当重大新消息。
+- 公告的 `notice_date` 就是首个可交易日（盘后发布记到下一天），衰减只数交易日。
 
 ### 数据可信度
 - **取不到数据就显示"暂无"，不要用估算值冒充真实数据**（例：涨跌家数曾按涨停数套固定比例得出假的 50%；
@@ -106,6 +116,7 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - 情绪"高潮"时仓位上限仍是满仓（总仓 100%、单票 30%）；回测显示一致板 3 日均值最差（约 -2.6%），
   是否下调由作者决定。
 - 暂不上云、暂不换 PostgreSQL；SQLite + 家里电脑满足当前规模。
+- 消息面接入方式（A 维持观察 / B 重大利空一票否决 / C 加权进评分 / D 消息驱动选股），见 `docs/消息面权重设计.md`。
 
 ## 环境变量
 
