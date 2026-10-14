@@ -52,9 +52,10 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 
 1. 改代码 → 本地 `pytest tests/unit` 全绿、`npm run build` 通过 → 提交并推送 master → 等 CI 变绿。
 2. 作者在电脑上 `git pull`。
-3. **改了前端时，作者电脑上还要 `cd web && npm run build`**：`web/dist` 是构建产物，被 `.gitignore` 的 `dist/` 忽略，不在 Git 里；Flask 直接托管这个目录。
-4. **改了后端时要重启服务**：双击「一键重启服务.bat」（会真的结束旧进程再启动）。只改前端不用重启。
-5. 服务启动日志在 `logs/server_console.log`，应用日志在 `logs/irontrader.log`（`[audit]` / `[access]` 前缀是审计记录）。
+3. 作者双击「一键重启服务.bat」：`restart.ps1` 会先检查 `web/src` 是否比 `web/dist/index.html` 新，
+   是就自动 `npm ci`（依赖变了才装）+ `npm run build`，再真的结束旧后端进程并重启。
+   `web/dist` 是构建产物，不在 Git 里（`.gitignore` 的 `dist/`）；只 `git pull` 不构建，新页面不会出现。
+4. 服务启动日志在 `logs/server_console.log`，应用日志在 `logs/irontrader.log`（`[audit]` / `[access]` 前缀是审计记录）。
 
 ## 必须遵守的约定
 

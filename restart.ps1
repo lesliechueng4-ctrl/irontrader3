@@ -18,7 +18,7 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 
 # 2. 重启 Cloudflare Tunnel 服务
-Write-Host "[步骤 1/3] 正在重启 Cloudflare Tunnel 穿透服务..." -ForegroundColor White
+Write-Host "[步骤 1/4] 正在重启 Cloudflare Tunnel 穿透服务..." -ForegroundColor White
 try {
     # 强制终止可能卡死的残留进程
     Stop-Process -Name "cloudflared" -Force -ErrorAction SilentlyContinue
@@ -29,9 +29,55 @@ try {
     Start-Service -Name "Cloudflared" -ErrorAction SilentlyContinue
 }
 
+# 2b. 前端有改动就自动重新构建（web/dist 不在 Git 里，git pull 之后必须重新构建，新页面才会出现）
+Write-Host ""
+Write-Host "[步骤 2/4] 正在检查前端是否需要重新构建..." -ForegroundColor White
+$scriptDirForWeb = Split-Path -Parent $PSCommandPath
+$webDir = Join-Path $scriptDirForWeb "web"
+$distIndex = Join-Path $webDir "dist\index.html"
+$frontendNote = "未检查"
+if (Test-Path (Join-Path $webDir "package.json")) {
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npm) {
+        $frontendNote = "没有找到 npm，前端未更新"
+        Write-Host "  [!] 没有找到 npm（Node.js），无法构建前端。请安装 Node.js 20+ 后重试。" -ForegroundColor Red
+    } else {
+        $builtAt = if (Test-Path $distIndex) { (Get-Item $distIndex).LastWriteTime } else { [datetime]::MinValue }
+        $sources = @(Get-ChildItem (Join-Path $webDir "src") -Recurse -File -ErrorAction SilentlyContinue) +
+                   @(Get-Item (Join-Path $webDir "package.json"), (Join-Path $webDir "index.html"), (Join-Path $webDir "vite.config.ts") -ErrorAction SilentlyContinue)
+        $newest = ($sources | Measure-Object -Property LastWriteTime -Maximum).Maximum
+        if ($newest -le $builtAt) {
+            $frontendNote = "已是最新"
+            Write-Host "  [OK] 前端已是最新（上次构建 $($builtAt.ToString('MM-dd HH:mm'))），跳过。" -ForegroundColor Green
+        } else {
+            Write-Host "  检测到前端代码有更新，正在构建（约 20~60 秒）..." -ForegroundColor Yellow
+            Push-Location $webDir
+            try {
+                $lock = Join-Path $webDir "package-lock.json"
+                $modules = Join-Path $webDir "node_modules"
+                if (-not (Test-Path $modules) -or ((Test-Path $lock) -and (Get-Item $lock).LastWriteTime -gt (Get-Item $modules).LastWriteTime)) {
+                    Write-Host "  - 依赖有变化，先安装依赖 (npm ci)..." -ForegroundColor DarkGray
+                    & npm.cmd ci --no-audit --no-fund 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+                }
+                $buildOut = & npm.cmd run build 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $frontendNote = "已重新构建"
+                    Write-Host "  [OK] 前端构建完成。" -ForegroundColor Green
+                } else {
+                    $frontendNote = "构建失败，仍是旧版页面"
+                    Write-Host "  [×] 前端构建失败，网页仍是旧版本。最后的输出：" -ForegroundColor Red
+                    $buildOut | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+}
+
 # 3. 检查 IronTrader 本地后端 (端口 5002)
 Write-Host ""
-Write-Host "[步骤 2/3] 正在重启 IronTrader 本地后端服务 (端口 5002)..." -ForegroundColor White
+Write-Host "[步骤 3/4] 正在重启 IronTrader 本地后端服务 (端口 5002)..." -ForegroundColor White
 
 $scriptDir = Split-Path -Parent $PSCommandPath
 Set-Location $scriptDir
@@ -113,7 +159,7 @@ if (Test-Backend) {
 
 # 4. 等待 Tunnel 连接注册并检测连通性
 Write-Host ""
-Write-Host "[步骤 3/3] 正在等待 Cloudflare 边缘节点握手建联 (约 3~5 秒)..." -ForegroundColor White
+Write-Host "[步骤 4/4] 正在等待 Cloudflare 边缘节点握手建联 (约 3~5 秒)..." -ForegroundColor White
 Start-Sleep -Seconds 4
 
 # 检测本地 ready 接口
@@ -138,6 +184,11 @@ try {
 
 Write-Host ""
 Write-Host "======================= 诊断结果报告 =======================" -ForegroundColor Cyan
+if ($frontendNote -eq "已是最新" -or $frontendNote -eq "已重新构建") {
+    Write-Host " [√] 前端页面           : $frontendNote" -ForegroundColor Green
+} else {
+    Write-Host " [!] 前端页面           : $frontendNote" -ForegroundColor Yellow
+}
 
 if ($readyConnCount -gt 0) {
     Write-Host " [√] Cloudflare 穿透通道 : 正常 (活跃连接数: $readyConnCount)" -ForegroundColor Green
