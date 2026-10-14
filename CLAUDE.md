@@ -1,6 +1,6 @@
 # IronTrader3 · 给 AI 编码助手的项目说明
 
-A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日内高抛低吸 / 选股扫描 / 回测 / 消息面 / 信号复盘）。
+A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日内高抛低吸 / 选股扫描 / 回测 / 消息面 / 信号复盘 / 次日预案）。
 个人项目，跑在作者家里的 Windows 电脑上，经 Cloudflare 隧道以 https://irontrader.asia 给几个朋友使用。
 **它只做研究辅助，不下单、不连券商。**
 
@@ -28,6 +28,7 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达、进程内共享缓存 |
 | `news_weighting.py` / `news_scanner.py` | 消息面计入低吸（第六维修正分）与龙头信心（方案 C）/ 消息催化扫描（方案 D）。设计见 `docs/消息面权重设计.md` |
 | `backtest_lab.py` | 回测实验室（分析台）：在信号复盘数据上做条件组合筛选、指标、收益分布、资金曲线、维度拆解、自动发现、结论翻转、旧回测样本导入。纯函数，接口在 `journal_routes` 的 `/api/lab/*` |
+| `next_day_plan.py` / `plan_routes.py` | 次日预案：收盘后按历史分组统计（收缩 + logit 合成）预测今天涨停股明天继续涨停 / 出★买点的概率；次日 9:25 竞价确认；存档（`plan_items` 表）与滚动验证。接口 `/api/plan`、`/api/plan/validation`、`/api/plan/archive` |
 | `signal_journal.py` | 信号复盘：每日梯队 / ★买点 / 昨弱今强 / 作战台候选落库（`outputs/signal_journal.db`），跟踪后 5 日表现（次日开盘 / 当日排板两种口径） |
 | `web/src/` | `pages/`（Dashboard / Scanners / Research / Journal / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
 | `tests/unit/` | 离线单元测试（CI 跑这些） |
@@ -116,6 +117,15 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
   当天 15:10 前不使用当天日 K（`bars_complete_until`）。日 K 优先腾讯接口，失败退回 `get_stock_history`。
 - 回补 / 立即更新只给管理员（后台任务，复用 `/api/scanners/jobs/<id>` 查进度）。回补时顺带把
   `outputs/backtest_samples.csv`（旧回测样本）里信号复盘没有的日期导入为 `origin=legacy`（没有题材信息、每天只有约 20 只）。
+
+### 次日预案
+- 只预测"明天会不会继续涨停 / 出★买点"，不预测收益（滚动验证里收益预测是反向的，已去掉）。"买不买"交给竞价确认。
+- 训练只用当时已知的结果：站在第 i 天收盘，次日结果只知道到 i-1；隔日收盘卖的收益只知道到 i-2。改模型时别破坏这一点
+  （`tests/unit/test_next_day_plan.py` 有防穿越用例）。
+- 收益口径按 A 股 T+1：次日开盘买、隔日收盘卖（`ret2`），扣 0.3% 成本；开盘涨停视为买不进，开盘跌停不给建议。
+- 竞价确认服从统一执行闸（闸关闭时只能"仅观察"）；第一次取到的竞价结果存档，之后不改。
+- 页面顶部必须显示滚动验证结论。当前结论（2026-10）：预测有效（次日涨停率约基准 1.6 倍），但按预案开盘买 / 竞价确认后买
+  都还是负收益——不要把预案包装成买入名单。参数（`SHRINK_N`、`ALPHA`、`FOCUS_LIFT`）改动要先跑滚动验证给作者看。
 
 ### 回测实验室
 - 页面 `Backtest.tsx` 只读信号复盘数据（`POST /api/lab/run`），与信号复盘口径一致；旧的 `backtest.py` / `backtest_study.py`

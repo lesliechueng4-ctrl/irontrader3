@@ -156,6 +156,13 @@ class JournalStore:
                 )""")
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
             c.execute("""
+                CREATE TABLE IF NOT EXISTS plan_items (
+                    plan_date TEXT NOT NULL, code TEXT NOT NULL, for_date TEXT, rank INTEGER, tier TEXT,
+                    p_cont REAL, p_hint REAL, item TEXT, created_at TEXT,
+                    auction_open_pct REAL, auction_advice TEXT, auction_at TEXT,
+                    PRIMARY KEY (plan_date, code)
+                )""")
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS lab_presets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, spec TEXT NOT NULL,
                     created_by TEXT, created_at TEXT
@@ -184,6 +191,43 @@ class JournalStore:
     def set_meta(self, key: str, value: str) -> None:
         with self._lock, self._conn() as c:
             c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
+
+    # ---- 次日预案存档 ----
+    def save_plan(self, plan_date: str, for_date: str, items: Sequence[Dict[str, Any]], at: str) -> None:
+        """同一天重复生成时整份替换（收盘前后数据可能更新），但保留已记录的竞价结果。"""
+        with self._lock, self._conn() as c:
+            kept = {r["code"]: dict(r) for r in c.execute(
+                "SELECT code, auction_open_pct, auction_advice, auction_at FROM plan_items WHERE plan_date=?", (plan_date,))}
+            c.execute("DELETE FROM plan_items WHERE plan_date=?", (plan_date,))
+            for it in items:
+                k = kept.get(it["code"], {})
+                c.execute(
+                    "INSERT INTO plan_items (plan_date, code, for_date, rank, tier, p_cont, p_hint, item, created_at, "
+                    "auction_open_pct, auction_advice, auction_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (plan_date, it["code"], for_date, it.get("rank"), it.get("tier"), it.get("p_cont"), it.get("p_hint"),
+                     json.dumps(it, ensure_ascii=False), at, k.get("auction_open_pct"), k.get("auction_advice"),
+                     k.get("auction_at")),
+                )
+
+    def load_plan(self, plan_date: str) -> List[Dict[str, Any]]:
+        with self._lock, self._conn() as c:
+            rows = [dict(r) for r in c.execute("SELECT * FROM plan_items WHERE plan_date=? ORDER BY rank", (plan_date,))]
+        for r in rows:
+            r["item"] = json.loads(r["item"]) if r.get("item") else {}
+            r["auction_advice"] = json.loads(r["auction_advice"]) if r.get("auction_advice") else None
+        return rows
+
+    def plan_dates(self) -> List[Dict[str, Any]]:
+        with self._lock, self._conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT plan_date, for_date, MIN(created_at) AS created_at, COUNT(*) AS n FROM plan_items "
+                "GROUP BY plan_date ORDER BY plan_date DESC")]
+
+    def save_auction(self, plan_date: str, code: str, open_pct: Optional[float], advice: Dict[str, Any], at: str) -> None:
+        with self._lock, self._conn() as c:
+            c.execute("UPDATE plan_items SET auction_open_pct=?, auction_advice=?, auction_at=? "
+                      "WHERE plan_date=? AND code=? AND auction_at IS NULL",
+                      (open_pct, json.dumps(advice, ensure_ascii=False), at, plan_date, code))
 
     # ---- 回测实验室保存的策略（条件组合）----
     def list_presets(self) -> List[Dict[str, Any]]:
@@ -293,6 +337,13 @@ class JournalStore:
             return [dict(r) for r in c.execute(
                 "SELECT trade_date, code, name, limit_count, first_limit_time, turnover_rate, closed_limit_up FROM signals "
                 "WHERE outcome_complete=0 AND trade_date >= ? ORDER BY code", (since,))]
+
+    def fingerprint(self) -> tuple:
+        """数据是否变化（新记录 / 后续表现更新），用于缓存失效。"""
+        with self._lock, self._conn() as c:
+            r = c.execute("SELECT COUNT(*), MAX(trade_date), MAX(last_seen_at), MAX(outcome_at), "
+                          "SUM(outcome_complete) FROM signals").fetchone()
+            return tuple(r)
 
     def dates(self) -> List[Dict[str, Any]]:
         with self._lock, self._conn() as c:

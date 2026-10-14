@@ -299,8 +299,19 @@ def recorder_tick(now: datetime, *, is_trading_day, ladder_live, ladder_fresh, w
         if n:
             service.update_outcomes(bars_of)
             _refresh_verdicts(service)
+            _make_plan(service, now, is_trading_day)
         return f"final:{n}"
     return "idle"
+
+
+def _make_plan(service, now, is_trading_day):
+    try:
+        import plan_routes
+
+        n = plan_routes.generate_after_close(service, now, is_trading_day)
+        logger.info(f"[plan] 次日预案已生成：{n} 只入选")
+    except Exception as exc:
+        logger.warning(f"[plan] 次日预案生成失败: {exc}")
 
 
 def _safe_workbench(mr):

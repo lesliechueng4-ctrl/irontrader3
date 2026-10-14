@@ -2552,3 +2552,75 @@ a.news-title:hover {
     grid-column: span 1;
   }
 }
+
+/* ---- 次日预案 ---- */
+.plan-verdict {
+  margin-bottom: 12px;
+}
+
+.plan-title-sub {
+  margin-left: 10px;
+  font-weight: normal;
+}
+
+.plan-head-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-auction {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--it-surface-2);
+}
+
+.plan-row-faded td {
+  opacity: 0.55;
+}
+
+.plan-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plan-reason {
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 20px;
+  background: var(--it-brand-soft);
+  white-space: nowrap;
+}
+
+.plan-reason.is-neg {
+  background: var(--it-surface-2);
+  color: var(--it-text-3);
+}
+
+.plan-mini-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.plan-advice {
+  line-height: 1.6;
+}
+
+.plan-thin {
+  opacity: 0.45;
+}
+
+.plan-val-range {
+  margin-bottom: 8px;
+}
+
+.plan-charts {
+  margin-top: 12px;
+}

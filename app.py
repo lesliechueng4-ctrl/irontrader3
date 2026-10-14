@@ -17,6 +17,7 @@ from lowbuy_routes import _get_low_buy_engine, init_lowbuy_routes, lowbuy_bp
 from market_routes import init_market_routes, market_bp
 from news_routes import news_bp
 from journal_routes import journal_bp, start_recorder
+from plan_routes import plan_bp
 from rate_limit import init_rate_limit
 from runtime_paths import application_data_dir, application_resource_dir
 from scanner_routes import scanner_bp
@@ -126,6 +127,7 @@ app.register_blueprint(backtest_bp)
 app.register_blueprint(intraday_bp)
 app.register_blueprint(news_bp)
 app.register_blueprint(journal_bp)
+app.register_blueprint(plan_bp)
 
 # 启动后台定时清理过期缓存（每30分钟执行一次）
 try:
@@ -209,7 +211,7 @@ if 'pytest' not in sys.modules and os.environ.get('IRONTRADER_JOURNAL', '1') != 
 # 旧版原生 JS 界面（templates/ + static/）已下线，/legacy 与 /v2 只做跳转。
 # 开发期用 Vite dev server（localhost:5173，已配 proxy）。
 _WEB_DIST = _RESOURCE_DIR / 'web' / 'dist'
-_SPA_ROUTES = ('/', '/scanners', '/research', '/backtest', '/journal', '/accounts')
+_SPA_ROUTES = ('/', '/scanners', '/research', '/backtest', '/journal', '/plan', '/accounts')
 
 
 def _spa_index():
