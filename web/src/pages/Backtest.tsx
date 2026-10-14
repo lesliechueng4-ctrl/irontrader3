@@ -1,333 +1,566 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Card, Empty, InputNumber, Skeleton, Table, Tag, Tooltip } from 'antd';
-import { ExperimentOutlined } from '@ant-design/icons';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Alert, App, Button, Card, Checkbox, DatePicker, Empty, Input, InputNumber, Modal, Popconfirm, Segmented, Skeleton,
+  Slider, Switch, Tooltip,
+} from 'antd';
+import { CloseOutlined, SaveOutlined, UndoOutlined } from '@ant-design/icons';
+import ReactECharts from 'echarts-for-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { get, post } from '../api/client';
-import { useIsOwner } from '../api/hooks';
-import type { BtAgg, BtReport, BtStatus, Job } from '../api/types-research';
-import { C, changeColor, STATUS_BG, STATUS_COLOR, type Status } from '../theme';
+import { useNavigate } from 'react-router-dom';
+import dayjs, { type Dayjs } from 'dayjs';
+import { get, post, send } from '../api/client';
+import { useIsOwner, useMe } from '../api/hooks';
+import type { LabBucket, LabFinding, LabMetrics, LabPreset, LabReport, LabSpec, LabTrade } from '../api/types-lab';
+import DataTable, { type DataColumn } from '../components/DataTable';
+import { JournalDataActions, JournalJobProgress, useJournalJob } from '../components/JournalJob';
+import { usePalette } from '../ThemeContext';
+import { C, changeColor, STATUS_COLOR, type Status } from '../theme';
+import { researchSearch } from '../utils/routes';
+import { equityOption, histogramOption } from './lab/charts';
 
-// 回测实验室：回放历史涨停池（龙头 / 分歧 / 一致 / 买点★），检验"持有 N 日"的真实胜率与收益。
-// 数据来自 outputs/backtest_summary.json（每次回测后重写，并与上一份比较"结论翻转"）。
+// 回测实验室：在信号复盘的逐笔记录上，按任意条件组合回答"这类票买进去到底怎么样"。
+// 数据与信号复盘是同一份（实盘记录 + 历史回补 + 导入的旧回测样本）。
 
-const pct = (w?: number | null) => (w == null ? '--' : `${Math.round(w * 100)}%`);
-const ret = (v?: number | null) => (v == null ? '--' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`);
-const winStatus = (w?: number | null): Status => (w == null ? 'none' : w >= 0.5 ? 'ok' : 'crit');
-
-function WinBar({ win }: { win?: number | null }) {
-  if (win == null) return <span className="muted">--</span>;
-  const st = winStatus(win);
-  return (
-    <span className="win-bar">
-      <span className="win-track">
-        <i style={{ width: `${Math.round(win * 100)}%`, background: STATUS_COLOR[st] }} />
-        <em />
-      </span>
-      <b className="num">{pct(win)}</b>
-    </span>
-  );
-}
-
-const SIGNAL_HINT: Record<string, string> = {
-  '买点★': '龙头梯队里标了"分歧买点★"的样本',
-  分歧: '当天换手放大、分歧转一致类的涨停',
-  一致: '一字 / 秒封等强势一致的涨停',
-  龙头: '题材内排第一的涨停股',
-  全部涨停: '全部涨停样本（基准）',
+const DEFAULT_SPEC: LabSpec = {
+  signals: [], signal_logic: 'any', roles: [], divergence: [], limit_min: null, limit_max: null, times: [],
+  turnover_min: null, turnover_max: null, breaks: 'any', sector_min: null, cycles: [], closed_only: false,
+  include_legacy: true, mode: 'next_open', horizon: 3, cost: 0.3,
 };
 
+const BUILTIN: { name: string; hint: string; spec: Partial<LabSpec> }[] = [
+  { name: '全部涨停', hint: '基准：不加任何条件', spec: {} },
+  { name: '★买点', hint: '龙头梯队标了弱转强买点★', spec: { signals: ['buy_hint'] } },
+  { name: '二板弱转强', hint: '昨弱今强 + 当天是二板', spec: { signals: ['wts'], limit_min: 2, limit_max: 2 } },
+  { name: '题材龙头 · 早封', hint: '题材 ≥3 家的龙头，10 点前封板', spec: { signals: ['leader'], times: ['auction', 'open'] } },
+  { name: '首板分歧', hint: '首板、换手放大或炸板回封', spec: { limit_min: 1, limit_max: 1, divergence: ['分歧'] } },
+  { name: '高位一致', hint: '4 板以上、缩量秒封', spec: { limit_min: 4, divergence: ['一致'] } },
+];
+
+const SIGNAL_OPTIONS = [
+  { label: '★买点', value: 'buy_hint' },
+  { label: '昨弱今强', value: 'wts' },
+  { label: '题材龙头（≥3家）', value: 'leader' },
+  { label: '作战台候选', value: 'candidate' },
+];
+const TIME_OPTIONS = [
+  { label: '开盘即封', value: 'auction' },
+  { label: '9:30–10:00', value: 'open' },
+  { label: '10:00–11:30', value: 'morning' },
+  { label: '13:00–14:30', value: 'afternoon' },
+  { label: '14:30 后', value: 'late' },
+];
+const MODE_LABEL = { next_open: '次日开盘买', same_day: '当日排板' } as const;
+const RANGE_PRESETS = [
+  { label: '近 1 月', value: [dayjs().subtract(1, 'month'), dayjs()] as [Dayjs, Dayjs] },
+  { label: '近 3 月', value: [dayjs().subtract(3, 'month'), dayjs()] as [Dayjs, Dayjs] },
+  { label: '近 6 月', value: [dayjs().subtract(6, 'month'), dayjs()] as [Dayjs, Dayjs] },
+];
+const TURNOVER_MAX = 40; // 滑块最右端 = 不限
+
+const pct = (w?: number | null) => (w == null ? '--' : `${Math.round(w * 100)}%`);
+const sign = (v?: number | null, d = 2) => (v == null ? '--' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`);
+const Ret = ({ v, d = 2 }: { v?: number | null; d?: number }) =>
+  v == null ? <span className="muted">--</span> : <span className="num" style={{ color: changeColor(v) }}>{sign(v, d)}</span>;
+const winStatus = (w?: number | null): Status => (w == null ? 'none' : w >= 0.5 ? 'ok' : 'crit');
+
+function useDebounced<T>(value: T, ms: number) {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return v;
+}
+
 export default function Backtest() {
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const { message } = App.useApp();
-  const [days, setDays] = useState(10);
   const isOwner = useIsOwner();
+  const me = useMe().data;
+  const palette = usePalette();
+  const [spec, setSpec] = useState<LabSpec>({ ...DEFAULT_SPEC, signals: ['buy_hint'] });
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null); // null = 全部
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState('');
 
-  const report = useQuery({ queryKey: ['bt-summary'], queryFn: () => get<BtReport | null>('/api/backtest/summary') });
-  const status = useQuery({
-    queryKey: ['bt-status'],
-    queryFn: () => get<BtStatus>('/api/backtest/status'),
-    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+  const body = useMemo(
+    () => ({ ...spec, ...(range ? { start: range[0].format('YYYY-MM-DD'), end: range[1].format('YYYY-MM-DD') } : {}) }),
+    [spec, range],
+  );
+  const debounced = useDebounced(body, 250);
+  const report = useQuery({
+    queryKey: ['lab', debounced],
+    queryFn: () => post<LabReport>('/api/lab/run', debounced),
+    placeholderData: (prev) => prev,
+    staleTime: 60_000,
   });
-  const history = useQuery({ queryKey: ['bt-history'], queryFn: () => get<Job[]>('/api/backtest/history') });
+  const presets = useQuery({ queryKey: ['lab-presets'], queryFn: () => get<LabPreset[]>('/api/lab/presets') });
+  const task = useJournalJob(() => qc.invalidateQueries({ queryKey: ['lab'] }));
 
-  const running = status.data?.running === true;
-  // 跑完的那一刻刷新周报与历史
-  const wasRunning = useRef(false);
-  useEffect(() => {
-    if (wasRunning.current && !running) {
-      qc.invalidateQueries({ queryKey: ['bt-summary'] });
-      qc.invalidateQueries({ queryKey: ['bt-history'] });
-      if (status.data?.error) message.error(`回测失败：${status.data.error}`);
-      else message.success('回测完成，结果已更新');
-    }
-    wasRunning.current = running;
-  }, [running, qc, status.data?.error, message]);
-
-  const rerun = useMutation({
-    mutationFn: () => post<BtStatus>('/api/backtest/rerun', { days }),
-    onSuccess: (s) => {
-      qc.setQueryData(['bt-status'], s);
-      qc.invalidateQueries({ queryKey: ['bt-history'] });
+  const savePreset = useMutation({
+    mutationFn: () => post<LabPreset>('/api/lab/presets', { name: saveName, spec }),
+    onSuccess: () => {
+      message.success('已保存');
+      setSaveOpen(false);
+      setSaveName('');
+      qc.invalidateQueries({ queryKey: ['lab-presets'] });
     },
-    onError: (e) => message.error(`启动失败：${(e as Error).message}`),
+    onError: (e) => message.error((e as Error).message),
+  });
+  const deletePreset = useMutation({
+    mutationFn: (id: number) => send<null>('delete', `/api/lab/presets/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['lab-presets'] }),
+    onError: (e) => message.error((e as Error).message),
   });
 
+  const set = (patch: Partial<LabSpec>) => setSpec((s) => ({ ...s, ...patch }));
+  /** 套用条件：保留买入口径 / 持有天数 / 成本 / 旧样本开关，其余换成新的 */
+  const apply = (patch: Partial<LabSpec>) =>
+    setSpec((s) => ({ ...DEFAULT_SPEC, mode: s.mode, horizon: s.horizon, cost: s.cost, include_legacy: s.include_legacy, ...patch }));
   const r = report.data;
-  const s = r?.summary;
-  const cross = s?.cross ?? [];
-  const star = cross.find((c) => c.signal === '买点★');
-  const base = cross.find((c) => c.signal === '全部涨停');
-  const worstCost = (s?.cost_sensitivity ?? []).slice(-1)[0];
-  const h = s?.h ?? 3;
-  const flipsFresh =
-    r?.flips?.length && r.as_of && Date.now() - Date.parse(r.as_of.replace(' ', 'T')) < 14 * 864e5;
-  const added = status.data?.status === 'completed' ? status.data?.result?.added : undefined;
+  const open = (code: string, name?: string) => navigate({ pathname: '/research', search: researchSearch(code, name) });
 
   return (
-    <div className="page">
+    <div className="page lab-page">
       <div className="page-head">
         <div>
           <h2>回测实验室</h2>
           <p className="muted">
-            回放历史涨停池与连板分歧，检验铁律买卖纪律在"持有 {h} 日"下的真实胜率与收益。样本逐次累积、按日期去重。
+            用信号复盘里的每一笔真实记录，按条件组合检验：这类票买进去，胜率多少、平均赚多少、亏的时候亏多深、哪段时间失效。
           </p>
         </div>
-        <div className="bt-controls">
-          <span className="muted">采样最近</span>
-          <InputNumber min={3} max={30} value={days} onChange={(v) => v != null && setDays(v)} addonAfter="天" style={{ width: 120 }} />
-          <Tooltip title={isOwner ? undefined : '回测会回放几十天的涨停池并拉取大量行情，只有管理员可以启动'}>
-            <Button
-              type="primary"
-              icon={<ExperimentOutlined />}
-              loading={running || rerun.isPending}
-              disabled={!isOwner}
-              onClick={() => rerun.mutate()}
-            >
-              {running ? '回测进行中' : '启动回测'}
-            </Button>
-          </Tooltip>
-        </div>
+        {isOwner && <JournalDataActions task={task} />}
       </div>
+      <JournalJobProgress task={task} />
 
-      {running && (
-        <Alert
-          type="info"
-          showIcon
-          className="scan-alert"
-          message={`回测进行中：${status.data?.progress || '启动中…'}`}
-          description="回放历史涨停池并拉取后续价格，通常 1–3 分钟；可以离开页面，回来会自动接上。"
-        />
-      )}
-      {!running && status.data?.status === 'interrupted' && (
-        <Alert type="warning" showIcon closable className="scan-alert" message="上一次回测因服务重启中断，结果未更新。" />
-      )}
-      {!running && status.data?.error && (
-        <Alert type="error" showIcon closable className="scan-alert" message={`上一次回测失败：${status.data.error}`} description="多为数据源暂不可用，稍后重试。" />
-      )}
-      {flipsFresh ? (
+      {(r?.flips.flips ?? []).length > 0 && (
         <Alert
           type="warning"
           showIcon
           className="scan-alert"
-          message={`回测结论翻转（${r?.prev_as_of ?? '上次'} → ${r?.as_of}）`}
+          message={`回测结论翻转（与 ${r!.flips.flips[0].since} 相比）`}
           description={
             <>
-              {r!.flips!.map((f, i) => (
-                <div key={i}>{f.note}</div>
+              {r!.flips.flips.map((f) => (
+                <div key={f.signal}>{f.note}</div>
               ))}
-              <div className="muted small">请重新审视当前的买卖纪律。</div>
+              <div className="muted small">请重新审视对应信号的买卖纪律。</div>
             </>
           }
         />
-      ) : null}
-
-      {report.isLoading ? (
-        <Card>
-          <Skeleton active />
-        </Card>
-      ) : !s || !s.total ? (
-        <Card>
-          <Empty description={s?.conclusion ?? '还没有回测结果。选择采样天数后点"启动回测"。'} />
-        </Card>
-      ) : (
-        <>
-          <div className="kpi-strip bt-kpis">
-            <div className="kpi-card">
-              <div className="kpi-label">
-                <span>样本库</span>
-                {added != null && added > 0 && <span className="muted">本轮 +{added}</span>}
-              </div>
-              <div className="kpi-value">
-                {s.total}
-                <span className="kpi-unit"> 笔</span>
-              </div>
-              <div className="kpi-sub">
-                覆盖 {s.days} 个交易日 · 截至 {r?.as_of ?? '--'}
-              </div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-label">
-                <span>买点★ 胜率</span>
-                <span className="kpi-status" style={{ color: STATUS_COLOR[winStatus(star?.win)], background: STATUS_BG[winStatus(star?.win)] }}>
-                  {star?.win == null ? '无样本' : star.win >= 0.5 ? '过半' : '不足半数'}
-                </span>
-              </div>
-              <div className="kpi-value">{pct(star?.win)}</div>
-              <div className="kpi-sub">{star?.n ?? 0} 个样本 · 持有 {h} 日</div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-label">
-                <span>买点★ 平均收益</span>
-              </div>
-              <div className="kpi-value" style={{ color: changeColor(star?.avg) }}>
-                {ret(star?.avg)}
-              </div>
-              <div className="kpi-sub">
-                中位数 {ret(star?.med)} · 基准(全部涨停) {ret(base?.avg)}
-              </div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-label">
-                <span>扣 {worstCost?.cost ?? 0.5}% 成本后</span>
-              </div>
-              <div className="kpi-value" style={{ color: changeColor(worstCost?.avg) }}>
-                {ret(worstCost?.avg)}
-              </div>
-              <div className="kpi-sub">胜率 {pct(worstCost?.win)} · 连板股次日滑点不小</div>
-            </div>
-          </div>
-
-          <Card className="bt-conclusion">
-            <b>结论</b>
-            <span>{s.conclusion}</span>
-          </Card>
-
-          <div className="bt-grid">
-            <Card title={`信号对比 · 持有 ${h} 日`}>
-              <Table<BtAgg & { signal: string }>
-                size="small"
-                pagination={false}
-                rowKey="signal"
-                dataSource={cross}
-                columns={[
-                  {
-                    title: '信号',
-                    dataIndex: 'signal',
-                    render: (v: string) => (
-                      <Tooltip title={SIGNAL_HINT[v]}>
-                        <span className={v === '买点★' ? 'bt-star' : ''}>{v}</span>
-                      </Tooltip>
-                    ),
-                  },
-                  { title: '样本', dataIndex: 'n', align: 'right', render: (v) => <span className="num">{v ?? 0}</span> },
-                  { title: '胜率', dataIndex: 'win', render: (v) => <WinBar win={v} /> },
-                  {
-                    title: '平均',
-                    dataIndex: 'avg',
-                    align: 'right',
-                    render: (v) => <span className="num" style={{ color: changeColor(v) }}>{ret(v)}</span>,
-                  },
-                  {
-                    title: '中位数',
-                    dataIndex: 'med',
-                    align: 'right',
-                    render: (v) => <span className="num" style={{ color: changeColor(v) }}>{ret(v)}</span>,
-                  },
-                ]}
-              />
-              <div className="muted small detail-foot">胜率条中间的刻度是 50%。</div>
-            </Card>
-
-            <div className="bt-side">
-              <Card title="买点★ · 分周期" size="small">
-                <div className="bt-cycles">
-                  {['强', '中', '弱'].map((k) => {
-                    const a = s.cycles?.[k] ?? {};
-                    return (
-                      <div key={k} className="bt-cycle">
-                        <span className="bt-cycle-name">{k}周期</span>
-                        {a.n ? (
-                          <>
-                            <WinBar win={a.win} />
-                            <span className="num" style={{ color: changeColor(a.avg) }}>
-                              {ret(a.avg)}
-                            </span>
-                            <span className="muted small num">{a.n} 样本</span>
-                          </>
-                        ) : (
-                          <span className="muted small">暂无样本</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-              <Card title="买点★ · 成本敏感性" size="small">
-                <table className="num-table bt-cost">
-                  <thead>
-                    <tr>
-                      <th>往返成本</th>
-                      <th>胜率</th>
-                      <th>平均</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(s.cost_sensitivity ?? []).map((c) => (
-                      <tr key={c.cost}>
-                        <td>{c.cost}%</td>
-                        <td>{pct(c.win)}</td>
-                        <td style={{ color: changeColor(c.avg) }}>{ret(c.avg)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="muted small detail-foot">0.3% ≈ 常规冲击，0.5% ≈ 追高冲击。</div>
-              </Card>
-            </div>
-          </div>
-        </>
       )}
 
-      <Card title="历史回测任务" size="small" className="bt-history">
-        <Table<Job>
-          size="small"
-          rowKey="id"
-          loading={history.isLoading}
-          dataSource={history.data ?? []}
-          pagination={false}
-          locale={{ emptyText: '暂无记录' }}
-          columns={[
-            { title: '开始时间', dataIndex: 'started_at_text', render: (v) => <span className="num">{v || '--'}</span> },
-            { title: '采样', render: (_, t) => `近 ${String(t.params?.days ?? '--')} 天` },
-            {
-              title: '状态',
-              dataIndex: 'status',
-              render: (v: Job['status']) => {
-                const map: Record<string, [string, string]> = {
-                  completed: ['完成', 'success'],
-                  failed: ['失败', 'error'],
-                  interrupted: ['中断', 'warning'],
-                  running: ['运行中', 'processing'],
-                  queued: ['排队', 'default'],
-                  pending: ['排队', 'default'],
-                };
-                const [label, color] = map[v] ?? [v, 'default'];
-                return <Tag color={color} bordered={false}>{label}</Tag>;
-              },
-            },
-            { title: '说明', render: (_, t) => <span className="muted">{t.error || t.message || t.phase || ''}</span> },
-            {
-              title: '耗时',
-              dataIndex: 'elapsed_sec',
-              align: 'right',
-              render: (v) => <span className="num">{v ? `${Math.round(v)} 秒` : '--'}</span>,
-            },
-          ]}
-        />
+      {/* ---------------- 条件 ---------------- */}
+      <Card className="lab-conditions">
+        <div className="lab-presets">
+          <span className="muted small">快速选择</span>
+          {BUILTIN.map((b) => (
+            <Tooltip key={b.name} title={b.hint}>
+              <button type="button" className="quick-chip" onClick={() => apply(b.spec)}>
+                {b.name}
+              </button>
+            </Tooltip>
+          ))}
+          {(presets.data ?? []).map((p) => (
+            <span key={p.id} className="quick-chip is-saved">
+              <button type="button" onClick={() => apply(p.spec)} title={`${p.created_by || '本机'} 保存于 ${p.created_at}`}>
+                {p.name}
+              </button>
+              {(isOwner || p.created_by === me?.name) && (
+                <Popconfirm title={`删除策略「${p.name}」？`} okText="删除" cancelText="取消" onConfirm={() => deletePreset.mutate(p.id)}>
+                  <CloseOutlined className="lab-chip-x" />
+                </Popconfirm>
+              )}
+            </span>
+          ))}
+          <span style={{ flex: 1 }} />
+          <Button size="small" icon={<UndoOutlined />} onClick={() => apply({})}>
+            清空条件
+          </Button>
+          <Button size="small" icon={<SaveOutlined />} onClick={() => setSaveOpen(true)}>
+            保存为策略
+          </Button>
+        </div>
+
+        <div className="lab-grid">
+          <Field label="区间">
+            <DatePicker.RangePicker
+              size="small"
+              value={range}
+              presets={RANGE_PRESETS}
+              placeholder={['全部', '全部']}
+              onChange={(v) => setRange(v && v[0] && v[1] ? [v[0], v[1]] : null)}
+            />
+          </Field>
+          <Field label="信号" wide>
+            <Checkbox.Group options={SIGNAL_OPTIONS} value={spec.signals} onChange={(v) => set({ signals: v as string[] })} />
+            {spec.signals.length > 1 && (
+              <Segmented size="small" value={spec.signal_logic} onChange={(v) => set({ signal_logic: v as 'any' | 'all' })}
+                options={[{ label: '满足任一', value: 'any' }, { label: '同时满足', value: 'all' }]} />
+            )}
+          </Field>
+          <Field label="题材地位">
+            <Checkbox.Group options={['龙头', '龙二', '龙三', '梯队']} value={spec.roles} onChange={(v) => set({ roles: v as string[] })} />
+          </Field>
+          <Field label="分歧 / 一致">
+            <Checkbox.Group options={['分歧', '中性', '一致']} value={spec.divergence} onChange={(v) => set({ divergence: v as string[] })} />
+          </Field>
+          <Field label="板数">
+            <span className="lab-inline">
+              <InputNumber size="small" min={1} max={20} placeholder="不限" value={spec.limit_min}
+                onChange={(v) => set({ limit_min: v == null ? null : Number(v) })} />
+              至
+              <InputNumber size="small" min={1} max={20} placeholder="不限" value={spec.limit_max}
+                onChange={(v) => set({ limit_max: v == null ? null : Number(v) })} />
+              板
+            </span>
+          </Field>
+          <Field label="首封时间" wide>
+            <Checkbox.Group options={TIME_OPTIONS} value={spec.times} onChange={(v) => set({ times: v as string[] })} />
+          </Field>
+          <Field label={`换手 ${spec.turnover_min ?? 0}% – ${spec.turnover_max == null ? '不限' : `${spec.turnover_max}%`}`}>
+            <Slider
+              range
+              min={0}
+              max={TURNOVER_MAX}
+              value={[spec.turnover_min ?? 0, spec.turnover_max ?? TURNOVER_MAX]}
+              onChange={([a, b]) => set({ turnover_min: a > 0 ? a : null, turnover_max: b < TURNOVER_MAX ? b : null })}
+              tooltip={{ formatter: (v) => (v === TURNOVER_MAX ? '不限' : `${v}%`) }}
+            />
+          </Field>
+          <Field label="盘中炸板">
+            <Segmented size="small" value={spec.breaks} onChange={(v) => set({ breaks: v as LabSpec['breaks'] })}
+              options={[{ label: '不限', value: 'any' }, { label: '没炸过', value: 'none' }, { label: '炸过回封', value: 'some' }]} />
+          </Field>
+          <Field label="题材涨停家数">
+            <Segmented size="small" value={spec.sector_min ?? 0} onChange={(v) => set({ sector_min: Number(v) || null })}
+              options={[{ label: '不限', value: 0 }, { label: '≥2', value: 2 }, { label: '≥3', value: 3 }, { label: '≥5', value: 5 }]} />
+          </Field>
+          <Field label="接力周期">
+            <Checkbox.Group options={['强', '中', '弱']} value={spec.cycles} onChange={(v) => set({ cycles: v as string[] })} />
+          </Field>
+          <Field label="其他">
+            <span className="lab-inline">
+              <Switch size="small" checked={spec.closed_only} onChange={(v) => set({ closed_only: v })} /> 只看收盘封住的
+              <Tooltip title="旧回测样本（6–9 月）每天只有最高板的约 20 只，没有题材信息">
+                <span className="lab-inline">
+                  <Switch size="small" checked={spec.include_legacy} onChange={(v) => set({ include_legacy: v })} /> 含旧样本
+                </span>
+              </Tooltip>
+            </span>
+          </Field>
+        </div>
+
+        <div className="lab-exec">
+          <Field label="买入口径">
+            <Segmented value={spec.mode} onChange={(v) => set({ mode: v as LabSpec['mode'] })}
+              options={[{ label: '次日开盘买', value: 'next_open' }, { label: '当日排板', value: 'same_day' }]} />
+          </Field>
+          <Field label="持有">
+            <Segmented value={spec.horizon} onChange={(v) => set({ horizon: v as LabSpec['horizon'] })}
+              options={[{ label: '1 日', value: 1 }, { label: '3 日', value: 3 }, { label: '5 日', value: 5 }]} />
+          </Field>
+          <Field label="往返成本">
+            <InputNumber size="small" min={0} max={5} step={0.1} value={spec.cost} addonAfter="%"
+              onChange={(v) => set({ cost: Number(v) || 0 })} style={{ width: 110 }} />
+          </Field>
+          <span className="muted small lab-exec-note">
+            {spec.mode === 'next_open'
+              ? '第二天开盘价买入，持有到第 N 个交易日收盘；次日开盘即涨停视为买不进'
+              : '信号当天按涨停价排板，持有到第 N 个交易日收盘；一字 / 秒板 / 封死视为买不进，炸板按涨停价计亏'}
+          </span>
+        </div>
       </Card>
-      <p className="muted small" style={{ marginTop: 12, color: C.text3 }}>
-        回测只统计历史样本，不代表未来收益；样本少于 10 个的分组不参与"结论翻转"判断。
-      </p>
+
+      {report.isLoading && <Skeleton active paragraph={{ rows: 10 }} />}
+      {report.isError && <Alert type="error" showIcon message={`回测失败：${(report.error as Error).message}`} />}
+      {r && r.dates.days === 0 && (
+        <Card>
+          <Empty description={isOwner ? '还没有复盘数据。点右上角"回补"，把近一个月的涨停和旧回测样本导进来。' : '还没有复盘数据，等管理员回补后再来看。'} />
+        </Card>
+      )}
+
+      {r && r.dates.days > 0 && (
+        <div className={report.isFetching ? 'lab-results is-fetching' : 'lab-results'}>
+          <KpiRow r={r} />
+          {r.metrics.n > 0 && r.metrics.n < 30 && (
+            <Alert type="info" showIcon className="scan-alert"
+              message={`只有 ${r.metrics.n} 笔交易，结论波动很大，先当线索看；条件放宽一点或等样本攒多再下结论。`} />
+          )}
+
+          <div className="lab-charts">
+            <Card title="收益分布" size="small" extra={<span className="muted small">每根柱子是落在这个收益区间的笔数</span>}>
+              {r.metrics.n ? (
+                <ReactECharts option={histogramOption(r.histogram, palette)} style={{ height: 240 }} notMerge />
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有买得进的交易" />
+              )}
+              <div className="muted small lab-chart-note">
+                平均盈利 <Ret v={r.metrics.avg_win} /> · 平均亏损 <Ret v={r.metrics.avg_loss} /> · 最好 <Ret v={r.metrics.best} /> · 最差 <Ret v={r.metrics.worst} />
+              </div>
+            </Card>
+            <Card title="资金曲线" size="small"
+              extra={
+                <Tooltip title={`资金分成 ${spec.horizon} 份轮动（持有 ${spec.horizon} 日），每个信号日用一份等权买入当天所有符合条件的票，每天累加"当日平均收益 ÷ ${spec.horizon}"。用来看策略在哪段时间失效，不是真实账户净值。`}>
+                  <span className="muted small">怎么算的？</span>
+                </Tooltip>
+              }>
+              {r.equity.series.length ? (
+                <ReactECharts option={equityOption(r.equity, palette)} style={{ height: 240 }} notMerge />
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              )}
+              <div className="muted small lab-chart-note">
+                累计 <Ret v={r.equity.total} /> · 基准 <Ret v={r.equity.base_total} /> · 最大回撤 <Ret v={r.equity.max_drawdown} /> ·
+                赚钱的日子 {r.equity.win_days}/{r.equity.days}
+              </div>
+            </Card>
+          </div>
+
+          <Card title="维度拆解" size="small" className="lab-breakdown"
+            extra={<span className="muted small">在当前条件里再按一个维度分组；超额 = 该组平均 - 全部涨停平均；样本 &lt;10 的组置灰；点一行把它加进条件</span>}>
+            <div className="lab-dims">
+              {r.breakdown.map((d) => (
+                <div key={d.key} className="lab-dim">
+                  <div className="lab-dim-title">{d.label}</div>
+                  <table className="lab-dim-table num-table">
+                    <thead>
+                      <tr>
+                        <th>分组</th>
+                        <th title="买得进的笔数；后面的 +N 是买不进的">笔数</th>
+                        <th>胜率</th>
+                        <th>平均</th>
+                        <th>超额</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {d.buckets.map((b) => (
+                        <BucketRow key={b.key} b={b} onApply={() => Object.keys(b.patch).length && set(b.patch)} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card title={`自动发现 · ${MODE_LABEL[spec.mode]}、持有 ${spec.horizon} 日、扣 ${spec.cost}% 成本`} size="small"
+            className="lab-findings"
+            extra={<span className="muted small">在区间内全部样本里，找跑赢 / 跑输基准最明显的组合（每组 ≥20 笔）；点"套用"直接查看</span>}>
+            <div className="lab-findings-grid">
+              <FindingList title="跑赢基准" items={r.findings.best} onApply={apply} />
+              <FindingList title="跑输基准（要避开的）" items={r.findings.worst} onApply={apply} />
+            </div>
+          </Card>
+
+          <Card title={`逐笔明细（${r.trades.length} 条）`} className="scan-card">
+            {r.trades.length ? (
+              <DataTable<LabTrade>
+                rows={r.trades}
+                columns={TRADE_COLUMNS}
+                codeOf={(t) => t.code}
+                nameOf={(t) => t.name}
+                exportName={`回测实验室_${MODE_LABEL[spec.mode]}_持有${spec.horizon}日`}
+                onOpen={open}
+                rowTone={(t) => (t.state !== 'trade' ? 'none' : (t.ret ?? 0) > 0 ? 'buy' : 'crit')}
+              />
+            ) : (
+              <Empty description="没有符合条件的记录" />
+            )}
+          </Card>
+
+          <p className="muted small lab-footnote">
+            数据区间 {r.dates.first} ~ {r.dates.last}，共 {r.dates.days} 个交易日。收益用前复权日 K 计算；胜率、平均只算买得进的样本。
+            历史统计不代表未来，样本少、条件多时尤其容易看到偶然规律。
+          </p>
+        </div>
+      )}
+
+      <Modal open={saveOpen} title="保存为策略" okText="保存" cancelText="取消" confirmLoading={savePreset.isPending}
+        onCancel={() => setSaveOpen(false)} onOk={() => savePreset.mutate()} okButtonProps={{ disabled: !saveName.trim() }}>
+        <Input autoFocus maxLength={30} placeholder="例如：二板弱转强·早封" value={saveName}
+          onChange={(e) => setSaveName(e.target.value)} onPressEnter={() => saveName.trim() && savePreset.mutate()} />
+        <div className="muted small" style={{ marginTop: 8 }}>
+          保存的是条件、买入口径、持有天数和成本（不含日期区间）；所有账号都能看到和使用。
+        </div>
+      </Modal>
     </div>
   );
 }
+
+function Field({ label, children, wide }: { label: string; children: React.ReactNode; wide?: boolean }) {
+  return (
+    <div className={`lab-field ${wide ? 'is-wide' : ''}`}>
+      <div className="lab-field-label">{label}</div>
+      <div className="lab-field-body">{children}</div>
+    </div>
+  );
+}
+
+function Kpi({ label, value, sub, tone }: { label: React.ReactNode; value: React.ReactNode; sub?: React.ReactNode; tone?: Status }) {
+  return (
+    <div className="kpi-card">
+      <div className="kpi-label">
+        <span>{label}</span>
+        {tone && tone !== 'none' && <i className="lab-kpi-dot" style={{ background: STATUS_COLOR[tone] }} />}
+      </div>
+      <div className="kpi-value">{value}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
+    </div>
+  );
+}
+
+function KpiRow({ r }: { r: LabReport }) {
+  const m: LabMetrics = r.metrics;
+  const b: LabMetrics = r.baseline;
+  return (
+    <div className="kpi-strip lab-kpis">
+      <Kpi
+        label="交易笔数"
+        value={<span className="num">{m.n}</span>}
+        sub={
+          <>
+            信号 {m.signals} · 买不进 {m.unbuyable}
+            {m.unbuyable_rate != null && m.unbuyable ? `（${pct(m.unbuyable_rate)}）` : ''}
+            {m.pending ? ` · 待行情 ${m.pending}` : ''}
+          </>
+        }
+      />
+      <Kpi label="胜率" tone={winStatus(m.win)} value={<span className="num">{pct(m.win)}</span>}
+        sub={<>基准 {pct(b.win)} · {r.excess.win == null ? '--' : `${r.excess.win > 0 ? '+' : ''}${Math.round(r.excess.win * 100)} 个百分点`}</>} />
+      <Kpi label="平均收益（期望）" value={<Ret v={m.avg} />} sub={<>基准 <Ret v={b.avg} /> · 超额 <Ret v={r.excess.avg} /></>} />
+      <Kpi label="中位数" value={<Ret v={m.median} />} sub={<>波动（标准差）{m.std == null ? '--' : `${m.std.toFixed(2)}%`}</>} />
+      <Kpi
+        label={<Tooltip title="盈亏比 = 平均盈利 ÷ 平均亏损；盈利因子 = 总盈利 ÷ 总亏损（>1 才赚钱）">盈亏比</Tooltip>}
+        value={<span className="num">{m.payoff == null ? '--' : m.payoff.toFixed(2)}</span>}
+        sub={<>盈利因子 {m.profit_factor == null ? '--' : m.profit_factor.toFixed(2)}</>}
+      />
+      <Kpi
+        label="持有期内波动"
+        value={<span className="num"><Ret v={m.avg_max_gain} d={1} /> / <Ret v={m.avg_max_drawdown} d={1} /></span>}
+        sub={<>平均最高 / 最深 · 次日连板率 {pct(m.next_limit_rate)}</>}
+      />
+    </div>
+  );
+}
+
+function BucketRow({ b, onApply }: { b: LabBucket; onApply: () => void }) {
+  return (
+    <tr className={`${b.reliable ? '' : 'is-faded'} ${Object.keys(b.patch).length ? 'is-clickable' : ''}`} onClick={onApply}
+      title={b.reliable ? '点击加入条件' : `只有 ${b.n} 笔，参考价值有限`}>
+      <td>{b.label}</td>
+      <td>
+        {b.n}
+        {b.unbuyable ? <span className="muted">+{b.unbuyable}</span> : null}
+      </td>
+      <td style={{ color: b.win == null ? undefined : STATUS_COLOR[winStatus(b.win)] }}>{pct(b.win)}</td>
+      <td><Ret v={b.avg} /></td>
+      <td>
+        <ExcessBar v={b.excess} />
+      </td>
+    </tr>
+  );
+}
+
+function ExcessBar({ v }: { v: number | null }) {
+  if (v == null) return <span className="muted">--</span>;
+  const w = Math.min(100, (Math.abs(v) / 8) * 100);
+  return (
+    <span className="lab-excess">
+      <span className="lab-excess-track">
+        <i style={{ width: `${w / 2}%`, [v >= 0 ? 'left' : 'right']: '50%', background: v >= 0 ? C.up : C.down }} />
+      </span>
+      <span className="num" style={{ color: changeColor(v) }}>{sign(v, 1)}</span>
+    </span>
+  );
+}
+
+function FindingList({ title, items, onApply }: { title: string; items: LabFinding[]; onApply: (p: Partial<LabSpec>) => void }) {
+  return (
+    <div>
+      <div className="lab-dim-title">{title}</div>
+      {items.length === 0 ? (
+        <div className="muted small">没有样本足够（≥20 笔）且明显偏离基准的组合</div>
+      ) : (
+        items.map((f) => (
+          <div key={f.label} className="lab-finding">
+            <div className="lab-finding-main">
+              <span>{f.label}</span>
+              <span className="muted small">
+                {f.n} 笔 · 胜率 {pct(f.win)} · 平均 {sign(f.avg)}
+              </span>
+            </div>
+            <ExcessBar v={f.excess} />
+            <Button size="small" type="link" onClick={() => onApply(f.patch)}>
+              套用
+            </Button>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+/** 首封时间统一成 HH:MM（实盘记录是 09:30:00，历史回补是 093025） */
+const timeOf = (v?: string | null) => {
+  if (!v) return '';
+  if (v.includes(':')) return v.slice(0, 5);
+  const d = v.replace(/\D/g, '').padStart(6, '0');
+  return `${d.slice(0, 2)}:${d.slice(2, 4)}`;
+};
+
+function tradeTags(t: LabTrade) {
+  return [
+    t.buy_hint_any && '★买点',
+    t.wts_any && '昨弱今强',
+    t.candidate_tier && (t.candidate_tier === 'primary' ? '优先关注' : '观察池'),
+    t.divergence && t.divergence !== '中性' && t.divergence,
+    t.closed_limit_up === false && '炸板',
+  ].filter(Boolean) as string[];
+}
+
+const TRADE_COLUMNS: DataColumn<LabTrade>[] = [
+  { key: 'date', title: '日期', value: (t) => t.trade_date, type: 'date', defaultSort: 'descend' },
+  { key: 'code', title: '代码', value: (t) => t.code, type: 'string' },
+  { key: 'name', title: '名称', value: (t) => t.name },
+  { key: 'sector', title: '题材', value: (t) => (t.sector ? `${t.sector} · ${t.sector_count}只` : '--') },
+  { key: 'role', title: '地位', value: (t) => `${t.role || '--'} · ${t.limit_count}板` },
+  { key: 'time', title: '首封', value: (t) => timeOf(t.first_limit_time) },
+  { key: 'turn', title: '换手%', value: (t) => t.turnover_rate, type: 'number' },
+  { key: 'tags', title: '标签', value: (t) => tradeTags(t).join(' '), width: 160 },
+  { key: 'cycle', title: '接力周期', value: (t) => t.cycle },
+  { key: 'nopen', title: '次日开盘%', value: (t) => t.next_open_pct, render: (t) => <Ret v={t.next_open_pct} />, type: 'number' },
+  {
+    key: 'ret',
+    title: '收益%',
+    value: (t) => t.ret,
+    render: (t) => (t.state === 'trade' ? <b><Ret v={t.ret} /></b> : <span className="muted">--</span>),
+    type: 'number',
+  },
+  {
+    key: 'streak',
+    title: '后续连板',
+    value: (t) => t.streak,
+    render: (t) =>
+      t.streak == null ? <span className="muted">--</span> : t.streak ? <span style={{ color: C.up }}>+{t.streak}</span> : <span className="muted">断板</span>,
+    type: 'number',
+  },
+  { key: 'mg', title: '期内最高%', value: (t) => t.max_gain, render: (t) => <Ret v={t.max_gain} />, type: 'number' },
+  { key: 'md', title: '期内最深%', value: (t) => t.max_drawdown, render: (t) => <Ret v={t.max_drawdown} />, type: 'number' },
+  {
+    key: 'state',
+    title: '状态',
+    value: (t) =>
+      t.state === 'trade'
+        ? '已完成'
+        : t.state === 'unbuyable'
+          ? t.reason || '买不进'
+          : t.next_open_pct != null
+            ? '持有期未满'
+            : '等待次日行情',
+    width: 150,
+    ellipsis: true,
+  },
+  { key: 'origin', title: '来源', value: (t) => ({ live: '实盘', backfill: '回补', legacy: '旧样本' })[t.origin] },
+];

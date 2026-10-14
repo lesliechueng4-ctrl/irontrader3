@@ -1,15 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, App, Button, Card, DatePicker, Empty, InputNumber, Progress, Segmented, Skeleton, Table, Tooltip } from 'antd';
-import { HistoryOutlined, SyncOutlined } from '@ant-design/icons';
+import { useMemo, useState } from 'react';
+import { Alert, Card, DatePicker, Empty, Segmented, Skeleton, Table, Tooltip } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import dayjs, { type Dayjs } from 'dayjs';
-import { get, postRaw } from '../api/client';
+import { get } from '../api/client';
 import { useIsOwner } from '../api/hooks';
-import type { Job } from '../api/types-research';
-import { TERMINAL_JOB_STATUSES } from '../api/types-research';
 import type { JournalData, JournalMode, JournalRow, JournalSignal, JournalStats } from '../api/types-journal';
 import DataTable, { type DataColumn } from '../components/DataTable';
+import { JournalDataActions, JournalJobProgress, useJournalJob } from '../components/JournalJob';
 import { C, changeColor, STATUS_COLOR, type Status } from '../theme';
 import { researchSearch } from '../utils/routes';
 
@@ -59,41 +57,6 @@ function WinBar({ win, n }: { win?: number | null; n?: number }) {
   );
 }
 
-function useJournalJob(onDone: () => void) {
-  const { message } = App.useApp();
-  const [jobId, setJobId] = useState<string | null>(null);
-  const job = useQuery({
-    queryKey: ['journal-job', jobId],
-    queryFn: () => get<Job>(`/api/scanners/jobs/${jobId}`),
-    enabled: !!jobId,
-    refetchInterval: (q) => (q.state.data && TERMINAL_JOB_STATUSES.includes(q.state.data.status) ? false : 2000),
-  });
-  const data = job.data;
-  useEffect(() => {
-    if (!data || !TERMINAL_JOB_STATUSES.includes(data.status)) return;
-    if (data.status === 'completed') message.success(data.message ?? '已完成');
-    else message.error(`任务${data.status === 'cancelled' ? '已取消' : '失败'}：${data.error ?? data.message ?? ''}`);
-    setJobId(null);
-    onDone();
-  }, [data, message, onDone]);
-
-  const start = async (url: string) => {
-    const { status, body } = await postRaw<Job>(url);
-    if (status === 409) {
-      const running = (body.job as Job | undefined)?.id;
-      if (running) setJobId(running);
-      message.info('已有复盘数据任务在运行，已接上进度');
-      return;
-    }
-    if (!body.success || !body.data) {
-      message.error(String(body.error ?? '启动失败'));
-      return;
-    }
-    setJobId(body.data.id);
-  };
-  return { running: !!jobId, job: data, start };
-}
-
 export default function Journal() {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -101,7 +64,6 @@ export default function Journal() {
   const [range, setRange] = useState<[Dayjs, Dayjs]>(PRESETS[2].value);
   const [mode, setMode] = useState<JournalMode>('next_open');
   const [signal, setSignal] = useState<JournalSignal>('buy_hint');
-  const [days, setDays] = useState(20);
 
   const start = range[0].format('YYYY-MM-DD');
   const end = range[1].format('YYYY-MM-DD');
@@ -127,40 +89,10 @@ export default function Journal() {
             每天的龙头梯队、★买点、昨弱今强、作战台候选都会自动记下来，并跟踪之后 5 个交易日的真实走势：买进去到底赚没赚、有没有继续连板。
           </p>
         </div>
-        {isOwner && (
-          <div className="journal-actions">
-            <Tooltip title="用东财历史涨停池按同一套梯队规则重算（约能回溯 1 个月），已有的实盘记录不会被覆盖">
-              <span className="journal-backfill">
-                回补近
-                <InputNumber size="small" min={1} max={40} value={days} onChange={(v) => setDays(Number(v) || 20)} />
-                个交易日
-                <Button size="small" icon={<HistoryOutlined />} disabled={task.running}
-                  onClick={() => task.start(`/api/journal/backfill/start?days=${days}`)}>
-                  回补
-                </Button>
-              </span>
-            </Tooltip>
-            <Button size="small" icon={<SyncOutlined />} disabled={task.running}
-              onClick={() => task.start('/api/journal/outcomes/start')}>
-              更新后续表现
-            </Button>
-          </div>
-        )}
+        {isOwner && <JournalDataActions task={task} />}
       </div>
 
-      {task.running && (
-        <Card size="small" className="journal-job">
-          <b>{task.job?.phase ?? '启动中'}</b>
-          <span className="muted"> {task.job?.message ?? ''}</span>
-          <Progress
-            size="small"
-            status="active"
-            strokeColor={C.brand}
-            percent={task.job?.total ? Math.round(((task.job.done ?? 0) / task.job.total) * 100) : 5}
-          />
-          <span className="muted small">在服务器后台运行，可以先离开页面。读日 K 较慢，几百只票要几分钟。</span>
-        </Card>
-      )}
+      <JournalJobProgress task={task} />
 
       <div className="journal-controls">
         <DatePicker.RangePicker
@@ -335,7 +267,7 @@ function detailColumns(mode: JournalMode): DataColumn<JournalRow>[] {
     {
       key: 'seen',
       title: '首次出现',
-      value: (r) => (r.origin === 'live' ? timeOf(r.first_seen_at) : '回补'),
+      value: (r) => (r.origin === 'live' ? timeOf(r.first_seen_at) : r.origin === 'legacy' ? '旧样本' : '回补'),
     },
     { key: 'cycle', title: '接力周期', value: (r) => r.cycle },
     { key: 'nopen', title: '次日开盘%', value: (r) => r.outcome?.next_open_pct, render: (r) => ret(r.outcome?.next_open_pct), type: 'number' },

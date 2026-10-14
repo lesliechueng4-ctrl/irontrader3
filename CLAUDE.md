@@ -27,6 +27,7 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `buyability.py` | 涨停股能否买进（一字/秒板/封死），龙头决策与作战台共用 |
 | `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达、进程内共享缓存 |
 | `news_weighting.py` / `news_scanner.py` | 消息面计入低吸（第六维修正分）与龙头信心（方案 C）/ 消息催化扫描（方案 D）。设计见 `docs/消息面权重设计.md` |
+| `backtest_lab.py` | 回测实验室（分析台）：在信号复盘数据上做条件组合筛选、指标、收益分布、资金曲线、维度拆解、自动发现、结论翻转、旧回测样本导入。纯函数，接口在 `journal_routes` 的 `/api/lab/*` |
 | `signal_journal.py` | 信号复盘：每日梯队 / ★买点 / 昨弱今强 / 作战台候选落库（`outputs/signal_journal.db`），跟踪后 5 日表现（次日开盘 / 当日排板两种口径） |
 | `web/src/` | `pages/`（Dashboard / Scanners / Research / Journal / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
 | `tests/unit/` | 离线单元测试（CI 跑这些） |
@@ -113,7 +114,15 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
   回补（`origin=backfill`）不覆盖实盘记录（`origin=live`），也没有盘中时间和作战台候选。
 - 后续表现统计只算"买得进"的样本：当日排板用 `buyability` 口径；次日开盘即涨停视为买不进。
   当天 15:10 前不使用当天日 K（`bars_complete_until`）。日 K 优先腾讯接口，失败退回 `get_stock_history`。
-- 回补 / 立即更新只给管理员（后台任务，复用 `/api/scanners/jobs/<id>` 查进度）。
+- 回补 / 立即更新只给管理员（后台任务，复用 `/api/scanners/jobs/<id>` 查进度）。回补时顺带把
+  `outputs/backtest_samples.csv`（旧回测样本）里信号复盘没有的日期导入为 `origin=legacy`（没有题材信息、每天只有约 20 只）。
+
+### 回测实验室
+- 页面 `Backtest.tsx` 只读信号复盘数据（`POST /api/lab/run`），与信号复盘口径一致；旧的 `backtest.py` / `backtest_study.py`
+  只剩命令行研究用途，`/api/backtest/*` 不再被页面使用。
+- 收益只算买得进的样本并扣往返成本；资金曲线按"资金分 N 份轮动（N=持有天数）"累加当日平均收益 ÷ N。
+- 自动发现只列样本 ≥20 的单维度 / 两两组合，样本相同的重复组合会被去掉；维度拆解样本 <10 置灰。
+- 结论翻转：每天收盘更新后存一次主要信号的结论（次日开盘、持有 3 日、0.3% 成本、近 30 天），与 ≥7 天前比较。
 
 ### 数据可信度
 - **取不到数据就显示"暂无"，不要用估算值冒充真实数据**（例：涨跌家数曾按涨停数套固定比例得出假的 50%；

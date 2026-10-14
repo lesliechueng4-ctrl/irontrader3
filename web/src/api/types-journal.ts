@@ -69,7 +69,7 @@ export interface JournalRow {
   first_seen_at: string;
   last_seen_at: string;
   closed_limit_up: boolean | null;
-  origin: 'live' | 'backfill';
+  origin: 'live' | 'backfill' | 'legacy';
   outcome: JournalOutcome | null;
   outcome_complete: boolean;
   outcome_at: string | null;

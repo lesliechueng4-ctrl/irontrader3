@@ -155,6 +155,11 @@ class JournalStore:
                     PRIMARY KEY (trade_date, code)
                 )""")
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS lab_presets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, spec TEXT NOT NULL,
+                    created_by TEXT, created_at TEXT
+                )""")
 
     @contextmanager
     def _conn(self):
@@ -179,6 +184,29 @@ class JournalStore:
     def set_meta(self, key: str, value: str) -> None:
         with self._lock, self._conn() as c:
             c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
+
+    # ---- 回测实验室保存的策略（条件组合）----
+    def list_presets(self) -> List[Dict[str, Any]]:
+        with self._lock, self._conn() as c:
+            rows = [dict(r) for r in c.execute("SELECT * FROM lab_presets ORDER BY id DESC")]
+        for r in rows:
+            r["spec"] = json.loads(r["spec"])
+        return rows
+
+    def add_preset(self, name: str, spec: Dict[str, Any], created_by: str, at: str) -> int:
+        with self._lock, self._conn() as c:
+            cur = c.execute("INSERT INTO lab_presets(name, spec, created_by, created_at) VALUES (?, ?, ?, ?)",
+                            (name, json.dumps(spec, ensure_ascii=False), created_by, at))
+            return int(cur.lastrowid)
+
+    def get_preset(self, pid: int) -> Optional[Dict[str, Any]]:
+        with self._lock, self._conn() as c:
+            r = c.execute("SELECT * FROM lab_presets WHERE id=?", (pid,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_preset(self, pid: int) -> None:
+        with self._lock, self._conn() as c:
+            c.execute("DELETE FROM lab_presets WHERE id=?", (pid,))
 
     # ---- 写入 ----
     def upsert(self, trade_date: str, items: Sequence[Dict[str, Any]], seen_at: str,
@@ -520,7 +548,7 @@ class JournalService:
         return {"days": len(tdays) - 1, "records": filled, "empty_days": empty}
 
 
-def tencent_bars(client, code: str, count: int = 80) -> List[Dict[str, Any]]:
+def tencent_bars(client, code: str, count: int = 260) -> List[Dict[str, Any]]:
     """腾讯日 K（前复权）：单次请求、国内源，比 AKShare 新浪接口快。返回升序 [{date, open, high, low, close}]。"""
     market = "sh" if code.startswith(("6", "9")) else "bj" if code.startswith(("4", "8")) else "sz"
     symbol = f"{market}{code}"

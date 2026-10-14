@@ -19,6 +19,7 @@ from flask import Blueprint, request
 
 from api_response import fail, ok
 from logger_config import get_logger
+import backtest_lab as lab
 import signal_journal as sj
 
 logger = get_logger(__name__)
@@ -62,7 +63,7 @@ def bars_of(code: str):
         return sj.tencent_bars(fetcher.source_client, code)
     except Exception as exc:
         logger.info(f"[journal] 腾讯日K失败 {code}，改用默认链路: {exc}")
-    df = fetcher.get_stock_history(code, days=80)
+    df = fetcher.get_stock_history(code, days=260)
     if df is None or df.empty:
         raise RuntimeError("日K为空")
     out = []
@@ -122,6 +123,86 @@ def journal_query():
     }, meta={"as_of": sj.now_sh().strftime("%Y-%m-%d %H:%M:%S")})
 
 
+def _legacy_path():
+    from runtime_paths import application_data_dir
+
+    return application_data_dir() / "outputs" / "backtest_samples.csv"
+
+
+LEGACY_SAMPLES = None  # 运行时取（测试可替换）
+
+
+def _refresh_verdicts(service):
+    try:
+        rows = service.store.query("2000-01-01", "2999-12-31")
+        lab.update_verdicts(service.store, rows, sj.now_sh().date())
+    except Exception as exc:
+        logger.warning(f"[lab] 结论快照更新失败: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# 回测实验室（分析台）
+# ---------------------------------------------------------------------------
+
+@journal_bp.route("/api/lab/run", methods=["POST"])
+def lab_run():
+    spec = request.get_json(silent=True) or {}
+    today = sj.now_sh().date()
+    try:
+        end = date.fromisoformat(spec.get("end") or today.isoformat())
+        start = date.fromisoformat(spec.get("start") or "2000-01-01")
+    except (TypeError, ValueError):
+        return fail("日期格式应为 YYYY-MM-DD", status=400, code="BAD_DATE")
+    if start > end:
+        start, end = end, start
+    store = get_service().store
+    rows = store.query(start.isoformat(), end.isoformat())
+    report = lab.run(rows, spec)
+    report["flips"] = lab.latest_flips(store, today)
+    return ok(report, meta={"as_of": sj.now_sh().strftime("%Y-%m-%d %H:%M:%S")})
+
+
+@journal_bp.route("/api/lab/presets", methods=["GET", "POST"])
+def lab_presets():
+    store = get_service().store
+    if request.method == "GET":
+        return ok(store.list_presets())
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()[:30]
+    if not name:
+        return fail("请给策略起个名字", status=400, code="NAME_REQUIRED")
+    spec = lab.normalize_spec(body.get("spec") or {})
+    spec.pop("start", None)
+    spec.pop("end", None)
+    pid = store.add_preset(name, spec, _who(), sj.now_sh().strftime("%Y-%m-%d %H:%M"))
+    return ok({"id": pid, "name": name, "spec": spec})
+
+
+@journal_bp.route("/api/lab/presets/<int:pid>", methods=["DELETE"])
+def lab_preset_delete(pid):
+    store = get_service().store
+    preset = store.get_preset(pid)
+    if not preset:
+        return fail("策略不存在", status=404, code="NOT_FOUND")
+    try:
+        from auth import is_owner
+        owner = is_owner()
+    except Exception:
+        owner = True
+    if not owner and preset.get("created_by") and preset["created_by"] != _who():
+        return fail(f"这个策略是 {preset['created_by']} 保存的，只有他本人或管理员可以删除", status=403, code="NOT_YOURS")
+    store.delete_preset(pid)
+    return ok(None)
+
+
+def _who():
+    try:
+        from auth import current_user
+        return (current_user() or {}).get("name") or ""
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # 后台任务：回补 / 更新后续表现（复用选股雷达的任务存储）
 # ---------------------------------------------------------------------------
@@ -142,13 +223,18 @@ def _run_job(job_id, kind, days):
             result["backfill"] = service.backfill(days, progress=progress,
                                                   cancelled=lambda: _scan_cancel_requested(job_id),
                                                   **_backfill_sources())
+            # 旧回测样本里东财已经取不到的更早日期，一并导入（只导一次，已有的日期跳过）
+            result["legacy"] = lab.import_legacy_samples(service.store, LEGACY_SAMPLES or _legacy_path())
         progress(phase="更新后续表现", message="读取日K...", done=0, total=0)
-        result["outcomes"] = service.update_outcomes(bars_of, progress=progress,
+        result["outcomes"] = service.update_outcomes(bars_of, lookback_days=400, progress=progress,
                                                      cancelled=lambda: _scan_cancel_requested(job_id))
+        _refresh_verdicts(service)
         parts = []
         if "backfill" in result:
             b = result["backfill"]
             parts.append(f"回补 {b['days']} 个交易日、{b['records']} 条信号")
+            if result["legacy"]["days"]:
+                parts.append(f"导入旧回测样本 {result['legacy']['days']} 天、{result['legacy']['imported']} 条")
         o = result["outcomes"]
         parts.append(f"更新后续表现 {o['updated']} 条（日K失败 {o['errors']} 只）")
         _update_scan_job(job_id, status="completed", phase="已完成", message="，".join(parts),
@@ -212,6 +298,7 @@ def recorder_tick(now: datetime, *, is_trading_day, ladder_live, ladder_fresh, w
         n = service.record(ladder_fresh(), workbench(), final=True)
         if n:
             service.update_outcomes(bars_of)
+            _refresh_verdicts(service)
         return f"final:{n}"
     return "idle"
 
