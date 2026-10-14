@@ -16,6 +16,7 @@ from logger_config import cleanup_legacy_logs, get_logger
 from lowbuy_routes import _get_low_buy_engine, init_lowbuy_routes, lowbuy_bp
 from market_routes import init_market_routes, market_bp
 from news_routes import news_bp
+from journal_routes import journal_bp, start_recorder
 from rate_limit import init_rate_limit
 from runtime_paths import application_data_dir, application_resource_dir
 from scanner_routes import scanner_bp
@@ -124,6 +125,7 @@ app.register_blueprint(hero_bp)
 app.register_blueprint(backtest_bp)
 app.register_blueprint(intraday_bp)
 app.register_blueprint(news_bp)
+app.register_blueprint(journal_bp)
 
 # 启动后台定时清理过期缓存（每30分钟执行一次）
 try:
@@ -198,12 +200,16 @@ def _start_dashboard_prewarm():
 
 _start_dashboard_prewarm()
 
+# 信号复盘：盘中每 2 分钟记录梯队 / 买点 / 候选，收盘后记收盘版并更新后续表现
+if 'pytest' not in sys.modules and os.environ.get('IRONTRADER_JOURNAL', '1') != '0':
+    start_recorder()
+
 # === 前端路由 ===
 # 全部页面都是 React 前端（web/dist 构建产物），带 SPA history 回退。
 # 旧版原生 JS 界面（templates/ + static/）已下线，/legacy 与 /v2 只做跳转。
 # 开发期用 Vite dev server（localhost:5173，已配 proxy）。
 _WEB_DIST = _RESOURCE_DIR / 'web' / 'dist'
-_SPA_ROUTES = ('/', '/scanners', '/research', '/backtest')
+_SPA_ROUTES = ('/', '/scanners', '/research', '/backtest', '/journal', '/accounts')
 
 
 def _spa_index():

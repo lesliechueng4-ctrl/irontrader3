@@ -1,6 +1,6 @@
 # IronTrader3 · 给 AI 编码助手的项目说明
 
-A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日内高抛低吸 / 选股扫描 / 回测 / 消息面）。
+A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日内高抛低吸 / 选股扫描 / 回测 / 消息面 / 信号复盘）。
 个人项目，跑在作者家里的 Windows 电脑上，经 Cloudflare 隧道以 https://irontrader.asia 给几个朋友使用。
 **它只做研究辅助，不下单、不连券商。**
 
@@ -14,7 +14,7 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | 位置 | 作用 |
 |---|---|
 | `app.py` | Flask 入口：注册蓝图、鉴权、限流、安全响应头、前端路由、首页数据预热线程 |
-| `*_routes.py` | 蓝图：`market_routes`（大屏/研报/作战台）、`scanner_routes`、`hero_routes`、`lowbuy_routes`、`intraday_routes`、`backtest_routes`、`news_routes` |
+| `*_routes.py` | 蓝图：`market_routes`（大屏/研报/作战台）、`scanner_routes`、`hero_routes`、`lowbuy_routes`、`intraday_routes`、`backtest_routes`、`news_routes`、`journal_routes` |
 | `auth.py` / `rate_limit.py` | 账号密码登录、角色、账号管理接口 / 按用户限流与管理员专属操作 |
 | `workbench_service.py` | 今日作战台候选 + **统一执行闸** `build_execution_context()` |
 | `research_conclusion.py` | 单票研报的统一结论（龙头 + 低吸 + 执行闸 → 一个结论和 `key_reason`） |
@@ -27,7 +27,8 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `buyability.py` | 涨停股能否买进（一字/秒板/封死），龙头决策与作战台共用 |
 | `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达、进程内共享缓存 |
 | `news_weighting.py` / `news_scanner.py` | 消息面计入低吸（第六维修正分）与龙头信心（方案 C）/ 消息催化扫描（方案 D）。设计见 `docs/消息面权重设计.md` |
-| `web/src/` | `pages/`（Dashboard / Scanners / Research / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
+| `signal_journal.py` | 信号复盘：每日梯队 / ★买点 / 昨弱今强 / 作战台候选落库（`outputs/signal_journal.db`），跟踪后 5 日表现（次日开盘 / 当日排板两种口径） |
+| `web/src/` | `pages/`（Dashboard / Scanners / Research / Journal / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
 | `tests/unit/` | 离线单元测试（CI 跑这些） |
 | `restart.ps1` / `一键重启服务.bat` | 作者日常用的重启脚本（UAC 提权、结束旧进程、后台启动、等待就绪、检查隧道） |
 
@@ -104,6 +105,15 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - "进展 / 第 N 次风险提示"类公告会自动降为"一般"：旧事的例行提醒不能当重大新消息。
 - 公告的 `notice_date` 就是首个可交易日（盘后发布记到下一天），衰减只数交易日。
 
+### 信号复盘
+- 记录由 `journal_routes.start_recorder` 线程完成：交易日 09:30–15:00 每 2 分钟一次，15:05 后记收盘版并更新后续表现。
+  涨停池是降级快照（不是今天的）时不记。服务没开的时段不会有实盘记录，只能事后"回补"（东财历史涨停池约 1 个月）。
+- 同一天同一只票一行：首次出现 / 首次买点 / 首次进候选保留第一次；`buy_hint_any`、`wts_any` 表示当天出现过。
+  回补（`origin=backfill`）不覆盖实盘记录（`origin=live`），也没有盘中时间和作战台候选。
+- 后续表现统计只算"买得进"的样本：当日排板用 `buyability` 口径；次日开盘即涨停视为买不进。
+  当天 15:10 前不使用当天日 K（`bars_complete_until`）。日 K 优先腾讯接口，失败退回 `get_stock_history`。
+- 回补 / 立即更新只给管理员（后台任务，复用 `/api/scanners/jobs/<id>` 查进度）。
+
 ### 数据可信度
 - **取不到数据就显示"暂无"，不要用估算值冒充真实数据**（例：涨跌家数曾按涨停数套固定比例得出假的 50%；
   炸板率曾默认 15%）。确实需要兜底时，字段里标明来源 / `*_available: false`，前端要显示出来。
@@ -134,6 +144,7 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 | `IRONTRADER_DATA_DIR` | 项目目录 | `users.json`、`.session_secret` 等运行时数据的位置 |
 | `IRONTRADER_PREWARM` | 1 | 设 0 关闭首页数据预热线程 |
 | `IRONTRADER_LIVE_TESTS` | 未设置 | 设 1 运行需要实时行情的测试 |
+| `IRONTRADER_JOURNAL` | 1 | 设 0 关闭信号复盘的自动记录线程 |
 | `IRONTRADER_NEWS` | 1 | 设 0 关闭消息面接入（低吸第六维、龙头信心、研报都按"暂无"处理） |
 | `LOG_RETENTION_DAYS` | 14 | 旧日志保留天数，0 关闭清理 |
 | `CORS_ALLOWED_ORIGINS` | 本机 + Vite | 允许跨域的来源 |

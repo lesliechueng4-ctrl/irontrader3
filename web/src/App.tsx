@@ -12,6 +12,7 @@ const IntradayDrawer = lazy(() => import('./components/IntradayDrawer'));
 const Scanners = lazy(() => import('./pages/Scanners'));
 const Research = lazy(() => import('./pages/Research'));
 const Backtest = lazy(() => import('./pages/Backtest'));
+const Journal = lazy(() => import('./pages/Journal'));
 const Accounts = lazy(() => import('./pages/Accounts'));
 
 export interface StockTarget {
@@ -23,6 +24,7 @@ const NAV = [
   { key: '/', label: '作战大屏' },
   { key: '/scanners', label: '选股雷达' },
   { key: '/research', label: '单票研报' },
+  { key: '/journal', label: '信号复盘' },
   { key: '/backtest', label: '回测实验室' },
 ];
 
@@ -109,6 +111,7 @@ export default function App() {
             <Route path="/" element={<Dashboard onOpenStock={openStock} />} />
             <Route path="/scanners" element={<Scanners onOpenStock={openStock} />} />
             <Route path="/research" element={<Research onOpenStock={openStock} />} />
+            <Route path="/journal" element={<Journal />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="*" element={<Navigate to="/" replace />} />
