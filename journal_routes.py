@@ -218,6 +218,9 @@ def _run_job(job_id, kind, days):
     try:
         service = get_service()
         result = {}
+        if kind == "plan_rebuild":
+            _rebuild_plan(job_id, service, progress)
+            return
         if kind == "journal_backfill":
             progress(phase="准备", message="读取交易日历...", done=0, total=0)
             result["backfill"] = service.backfill(days, progress=progress,
@@ -264,6 +267,54 @@ def _start(kind, days=0):
     except Exception:
         _JOB_LOCK.release()
         raise
+
+
+def _rebuild_plan(job_id, service, progress):
+    """手动更新次日预案：收盘版还没记（服务 15:05 没开着 / 等不及）就先记收盘版、更新后续表现，再重新生成。"""
+    import market_routes as mr
+    import plan_routes
+    from news_catalyst import is_trading_day
+    from scanner_routes import _update_scan_job
+
+    now = sj.now_sh()
+    today = now.date().isoformat()
+    hm = now.hour * 60 + now.minute
+    notes = []
+    if is_trading_day(now.date()) and not service.finalized(today):
+        if hm < 15 * 60:
+            notes.append("还没收盘，明天的预案要 15:00 后才能生成，这次只按最新数据重算了现有预案")
+        else:
+            progress(phase="记录收盘版", message="读取今天的涨停池...", done=0, total=0)
+            n = service.record(mr._get_dragon_ladder().build(force=True), _safe_workbench(mr), final=True)
+            if not n:
+                raise RuntimeError("今天的涨停池还拿不到（数据源返回的不是今天的），稍后再试")
+            notes.append(f"已记录今天收盘版 {n} 只")
+    progress(phase="更新后续表现", message="读取日K...", done=0, total=0)
+    o = service.update_outcomes(bars_of, progress=progress, cancelled=lambda: _scan_cancel(job_id))
+    _refresh_verdicts(service)
+    plan_routes.clear_cache()
+    progress(phase="生成预案", message="按最新数据重新计算...", done=0, total=0)
+    plan_date = plan_routes.latest_plan_date(service, now)
+    if not plan_date:
+        raise RuntimeError("还没有信号复盘数据，先回补")
+    items = plan_routes.ensure_plan(service, plan_date, is_trading_day=is_trading_day, now=now, force=True)
+    for_date = items[0]["for_date"] if items else ""
+    notes.append(f"{plan_date} 收盘 → {for_date} 预案已更新，入选 {sum(1 for i in items if i.get('tier'))} 只")
+    if o["errors"]:
+        notes.append(f"日K失败 {o['errors']} 只")
+    _update_scan_job(job_id, status="completed", phase="已完成", message="；".join(notes),
+                     result={"plan_date": plan_date, "for_date": for_date}, finished_at=time.time())
+
+
+def _scan_cancel(job_id):
+    from scanner_routes import _scan_cancel_requested
+
+    return _scan_cancel_requested(job_id)
+
+
+@journal_bp.route("/api/plan/rebuild", methods=["POST"])
+def plan_rebuild_start():
+    return _start("plan_rebuild")
 
 
 @journal_bp.route("/api/journal/backfill/start", methods=["POST"])

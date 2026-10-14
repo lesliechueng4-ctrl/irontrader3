@@ -216,3 +216,43 @@ def test_generate_after_close_requires_final_record(env):
     svc.store.set_meta(f"final:{days[-1]}", "x")
     n = plan_routes.generate_after_close(svc, datetime.fromisoformat(days[-1] + "T15:10:00+08:00"), lambda d: True)
     assert n >= 1 and svc.store.load_plan(days[-1])
+
+
+# ---------------- 手动更新预案（管理员） ----------------
+
+def _run_rebuild(svc, monkeypatch, now):
+    import journal_routes
+    import news_catalyst
+    import scanner_routes
+
+    monkeypatch.setattr(journal_routes.sj, "now_sh", lambda: now)
+    monkeypatch.setattr(news_catalyst, "is_trading_day", lambda d, checker=None: d.weekday() < 5)
+    monkeypatch.setattr(journal_routes, "bars_of", lambda code: [])
+    job = scanner_routes._create_scan_job("plan_rebuild")
+    journal_routes._rebuild_plan(job["id"], svc, lambda **kw: None)
+    return scanner_routes._get_scan_job(job["id"])
+
+
+def test_rebuild_after_close_regenerates_tomorrows_plan(env, monkeypatch):
+    svc, _, _, days = env
+    last = date.fromisoformat(days[-1])
+    svc.store.set_meta(f"final:{days[-1]}", "x")   # 收盘版已记
+    job = _run_rebuild(svc, monkeypatch, datetime(last.year, last.month, last.day, 15, 20, tzinfo=TZ))
+    assert job["status"] == "completed" and job["result"]["plan_date"] == days[-1]
+    assert "预案已更新" in job["message"] and svc.store.load_plan(days[-1])
+
+
+def test_rebuild_before_close_only_recomputes_current_plan(env, monkeypatch):
+    svc, _, _, days = env
+    job = _run_rebuild(svc, monkeypatch, datetime(2026, 10, 14, 11, 0, tzinfo=TZ))
+    assert job["status"] == "completed" and job["result"]["plan_date"] == days[-1]
+    assert "还没收盘" in job["message"]
+
+
+def test_rebuild_is_owner_only():
+    from werkzeug.datastructures import MultiDict
+
+    from rate_limit import owner_only
+
+    assert owner_only("POST", "/api/plan/rebuild", MultiDict())
+    assert owner_only("GET", "/api/plan", MultiDict()) is None

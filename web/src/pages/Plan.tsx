@@ -1,10 +1,14 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Alert, Card, Empty, Select, Skeleton, Switch, Table, Tag, Tooltip } from 'antd';
+import { Alert, Button, Card, Empty, Select, Skeleton, Switch, Table, Tag, Tooltip } from 'antd';
+import { SyncOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ReactECharts from 'echarts-for-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { get } from '../api/client';
+import { useIsOwner } from '../api/hooks';
+import { JournalJobProgress, useJournalJob } from '../components/JournalJob';
 import type {
   AuctionAdvice, AuctionRule, PlanAgg, PlanArchiveEntry, PlanData, PlanItem, PlanValidation, PlanVerdict,
 } from '../api/types-plan';
@@ -33,6 +37,14 @@ export default function Plan() {
   const palette = usePalette();
   const [showAll, setShowAll] = useState(false);
   const [viewDate, setViewDate] = useState<string | null>(null);
+  const isOwner = useIsOwner();
+  const qc = useQueryClient();
+  const task = useJournalJob(() => {
+    setViewDate(null);
+    qc.invalidateQueries({ queryKey: ['plan'] });
+    qc.invalidateQueries({ queryKey: ['plan-validation'] });
+    qc.invalidateQueries({ queryKey: ['plan-archive'] });
+  });
 
   const plan = useQuery({
     queryKey: ['plan', viewDate],
@@ -59,6 +71,9 @@ export default function Plan() {
   const picked = useMemo(() => (d?.items ?? []).filter((i) => i.tier), [d]);
   const rows = showAll ? d?.items ?? [] : picked;
   const base = d?.model?.base;
+  // 今天已收盘、但显示的还是"今天用"的预案：明天的预案 15:05 后自动生成（服务要开着），管理员也可以手动更新
+  const now = dayjs();
+  const waitingToday = !viewDate && d?.for_date === now.format('YYYY-MM-DD') && now.hour() >= 15;
 
   return (
     <div className="page">
@@ -70,7 +85,20 @@ export default function Plan() {
             明天 9:25 竞价后，再按"这类票开在这个幅度时历史上买进去赚不赚钱"给出确认。
           </p>
         </div>
+        {isOwner && (
+          <Tooltip title="收盘后：今天的收盘版还没记就先记，再更新后续表现、重新生成明天的预案。盘中：按最新数据重算当前预案（已存档的竞价结果不变）">
+            <Button size="small" icon={<SyncOutlined />} loading={task.running} onClick={() => task.start('/api/plan/rebuild')}>
+              更新预案
+            </Button>
+          </Tooltip>
+        )}
       </div>
+
+      <JournalJobProgress task={task} />
+      {waitingToday && !task.running && (
+        <Alert className="scan-alert" type="info" showIcon
+          message={`今天已收盘，明天的预案会在 15:05 记完收盘版后自动生成（服务需开着），页面 5 分钟内自动刷新。${isOwner ? '等不及可以点右上角"更新预案"。' : ''}`} />
+      )}
 
       {d?.verdict && (
         <Alert className="scan-alert plan-verdict" type={verdictType(d.verdict.level)} showIcon

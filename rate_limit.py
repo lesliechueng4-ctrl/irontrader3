@@ -76,6 +76,7 @@ _OWNER_ONLY_EXACT = {
     ("POST", "/api/lowbuy/batch"),
     ("POST", "/api/journal/backfill/start"),
     ("POST", "/api/journal/outcomes/start"),
+    ("POST", "/api/plan/rebuild"),
 }
 
 _WINDOW_LABEL = {MINUTE: "每分钟", HOUR: "每小时", DAY: "每天"}

@@ -6,7 +6,7 @@ import { get, postRaw } from '../api/client';
 import { TERMINAL_JOB_STATUSES, type Job } from '../api/types-research';
 import { C } from '../theme';
 
-const KINDS = ['journal_backfill', 'journal_outcomes'];
+const KINDS = ['journal_backfill', 'journal_outcomes', 'plan_rebuild'];
 
 /**
  * 复盘数据的后台任务（回补历史 / 更新后续表现）：信号复盘和回测实验室共用。
