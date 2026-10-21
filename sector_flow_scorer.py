@@ -306,17 +306,22 @@ class SectorFlowScorer:
         if not sector_name or sector_name == '未知':
             return '中性'
 
-        net_inflow = sector_flow.get('net_inflow', 0)
-        rank = sector_flow.get('rank', 0)
-        total = sector_flow.get('total', 1)
+        net_inflow = sector_flow.get('net_inflow')
+        rank = sector_flow.get('rank') or 0
+        total = sector_flow.get('total') or 0
 
-        if total == 0:
+        # 资金流表里找不到这个板块（或整张表都没取到）时 net_inflow 是 None、rank 是 0：
+        # 不判断切换方向。以前这里会拿 None 和 0 比大小，整只票的低吸分析直接报错。
+        if total <= 0 or rank <= 0:
             return '中性'
 
         # 排名在前20% → 被切入方向
-        if rank > 0 and rank <= max(1, total * 0.2):
+        if rank <= max(1, total * 0.2):
             return '被切入'
-        
+
+        if net_inflow is None:
+            return '中性'
+
         # 排名在后20% + 净流出 → 被切出方向
         if rank > 0 and rank >= total * 0.8 and net_inflow < 0:
             return '被切出'

@@ -2,6 +2,7 @@
 import pytest
 
 import backtest_routes
+import data_fetcher
 import lowbuy_routes
 import market_routes
 import news_routes
@@ -26,7 +27,9 @@ def fresh_dashboard_cache():
     for cache in caches:
         cache.clear()
     watch_routes.clear_caches()
+    data_fetcher.clear_sector_flow_cache()
     yield
     for cache in caches:
         cache.clear()
     watch_routes.clear_caches()
+    data_fetcher.clear_sector_flow_cache()

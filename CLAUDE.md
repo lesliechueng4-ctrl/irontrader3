@@ -22,7 +22,7 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `low_buy_engine.py` | 低吸五维评分（含价格位置检查 `_position_check`） |
 | `market_emotion_filter.py` / `market_sentiment.py` / `dragon_ladder.py` | 三个"周期"的来源（见下文） |
 | `task_manager.py` | 所有后台任务（扫描、回测）的唯一状态存储（SQLite） |
-| `single_flight_cache.py` | `SingleFlightCache`（同 key 只构建一次）+ `SwrCache`（先给旧值、后台刷新） |
+| `single_flight_cache.py` | `SingleFlightCache`（同 key 只构建一次）+ `SwrCache`（先给旧值、后台刷新）+ `MarketSwr`（同上，但按行情时钟：休市后取的数据不再重拉，失败有冷却） |
 | `api_response.py` | 统一响应 `ok()` / `fail()` |
 | `buyability.py` | 涨停股能否买进（一字/秒板/封死），龙头决策与作战台共用 |
 | `news_catalyst.py` | 消息面：公告/新闻抓取、规则分类（`RULES`）、衰减加权打分、全市场重大消息雷达、进程内共享缓存 |
@@ -162,6 +162,8 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - 龙头池日 K 走腾讯（`signal_journal.tencent_bars`，直连、可并发），只取已收盘的交易日（15:10 前不含当天），与原新浪日 K 口径一致。
   `DataFetcher.get_stock_history` 里的全局锁只包新浪日 K（`stock_zh_a_daily` 每次新建 py_mini_racer 引擎，不能并发）。
 - 搜索名单走 `stock_directory`（`market_routes.get_stock_directory()`），不要再在请求里调 `ak.stock_info_a_code_name()`。
+- 板块资金流（`DataFetcher.get_sector_money_flow_map`）进程内一份 `MarketSwr`：盘中 60 秒新鲜、15 分钟内先给旧值后台刷新、休市不重拉、全失败返回 `{}`。
+  东财失败时退到同花顺行业，板块名多半对不上，`SectorFlowScorer` 按"无数据"处理（`net_inflow` 为 None），新代码别拿它直接比大小。
 
 ### 数据可信度
 - **取不到数据就显示"暂无"，不要用估算值冒充真实数据**（例：涨跌家数曾按涨停数套固定比例得出假的 50%；

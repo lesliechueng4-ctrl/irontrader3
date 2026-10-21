@@ -23,6 +23,35 @@ from runtime_paths import application_data_dir
 
 _AKSHARE_HISTORY_LOCK = threading.Lock()
 
+# 板块资金流：进程内一份（龙头决策另有一个 DataFetcher 实例，也共用这一份），见 get_sector_money_flow_map
+SECTOR_FLOW_CACHE_KEY = "sector_money_flow"
+SECTOR_FLOW_FRESH = 60.0
+SECTOR_FLOW_STALE = 900.0
+_SECTOR_FLOW = None
+_SECTOR_FLOW_INIT = threading.Lock()
+
+
+def _sector_flow_swr(fetcher):
+    global _SECTOR_FLOW
+    with _SECTOR_FLOW_INIT:
+        if _SECTOR_FLOW is None:
+            from single_flight_cache import MarketSwr
+
+            _SECTOR_FLOW = MarketSwr(
+                fetcher._load_sector_money_flow, SECTOR_FLOW_FRESH, SECTOR_FLOW_STALE,
+                restore=fetcher._restore_sector_money_flow,
+                store=lambda value: fetcher._set_cache(SECTOR_FLOW_CACHE_KEY, value),
+                name="sector-flow-refresh",
+            )
+        return _SECTOR_FLOW
+
+
+def clear_sector_flow_cache() -> None:
+    """测试用：丢掉进程内的板块资金流（下次使用重新绑定 DataFetcher 并从磁盘恢复）。"""
+    global _SECTOR_FLOW
+    with _SECTOR_FLOW_INIT:
+        _SECTOR_FLOW = None
+
 
 class DataFetcher:
     """数据获取器 - 封装 AKShare API 调用"""
@@ -830,13 +859,24 @@ class DataFetcher:
             return None
 
     def get_sector_money_flow_map(self, force_refresh: bool = False) -> Dict[str, Dict]:
-        """Fetch sector capital-flow ranking and normalize it by sector name."""
-        cache_key = "sector_money_flow"
-        if not force_refresh:
-            cached = self._get_cache(cache_key)
-            if cached:
-                return cached
+        """板块资金流排名（按板块名）；取不到时返回 {}。
 
+        低吸板块维度、龙头决策每分析一只票都要用它。盘中 60 秒内直接用；过期后先给旧值、后台刷新
+        （同一时间只拉一次）；午休 / 收盘后只要手里是休市后取的就不再重拉；拉取失败时 15 分钟内的旧值继续用。
+        以前缓存一过期，正在分析的那个请求就要当场等东财 5 页（1~15 秒），午休和收盘后也每分钟拉一次。
+        """
+        return _sector_flow_swr(self).get(force=force_refresh) or {}
+
+    def _restore_sector_money_flow(self):
+        """重启后先用落盘的最后一份（取数时间按落盘时间算），由 MarketSwr 判断还能不能用。"""
+        stale = self.cache_manager.get_stale(SECTOR_FLOW_CACHE_KEY)
+        if not stale:
+            return None
+        data, age = stale
+        from market_clock import TZ
+        return data, datetime.now(TZ) - timedelta(seconds=float(age))
+
+    def _load_sector_money_flow(self) -> Dict[str, Dict]:
         loaders = [
             (
                 "eastmoney_industry",
@@ -853,12 +893,11 @@ class DataFetcher:
                 df = loader()
                 normalized = self._normalize_sector_money_flow_frame(df, source_name)
                 if normalized:
-                    self._set_cache(cache_key, normalized)
                     return normalized
             except Exception as e:
                 logger.warning(f"获取板块资金流失败 {source_name}: {e}")
 
-        return {}
+        raise RuntimeError("板块资金流：东财、同花顺都没有取到")
 
     def _normalize_sector_money_flow_frame(self, df: pd.DataFrame, source_name: str) -> Dict[str, Dict]:
         """Normalize different provider schemas into one sector money-flow map."""

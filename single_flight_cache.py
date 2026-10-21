@@ -236,3 +236,152 @@ class SwrCache:
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+
+
+class MarketSwr:
+    """
+    一份"盘中按 TTL 刷新、休市后不重拉"的共享行情数据（板块资金流这类每个请求都要用一下的数据）：
+
+    - 手里的数据取于最近一次收盘（含午休）之后：它就是当前状态，直接用，不再拉；
+    - 盘中 fresh_ttl 内：直接用；
+    - 盘中超过 fresh_ttl、没超过 stale_ttl：立即返回旧值，后台刷新一次（同一时间只刷一个）；
+    - 没有数据或太旧：当场拉，并发请求共享同一次；拉取失败时 stale_ttl 内的旧值继续用，再没有才返回 None。
+      手里什么都没有又拉失败时，fail_cooldown 秒内不再重试，免得数据源故障时每个请求都排队等超时。
+
+    loader 失败时抛异常或返回空值，不要返回假数据；restore 在第一次使用时调用一次（从磁盘恢复，
+    返回 (值, 取数时间) 或 None），store 在每次拉取成功后调用（落盘）。
+    """
+
+    def __init__(self, loader: Callable[[], Any], fresh_ttl: float, stale_ttl: float, *,
+                 restore: Optional[Callable[[], Optional[Tuple[Any, Any]]]] = None,
+                 store: Optional[Callable[[Any], None]] = None,
+                 is_valid: Callable[[Any], bool] = bool,
+                 now_fn: Optional[Callable[[], Any]] = None,
+                 trading_day=None, fail_cooldown: float = 30.0,
+                 clock: Callable[[], float] = time.monotonic, name: str = "market-swr"):
+        self.loader = loader
+        self.fresh_ttl = float(fresh_ttl)
+        self.stale_ttl = float(stale_ttl)
+        self.fail_cooldown = float(fail_cooldown)
+        self._clock = clock
+        self._failed_at: Optional[float] = None
+        self._restore = restore
+        self._store = store
+        self._is_valid = is_valid
+        self._now_fn = now_fn
+        self._trading_day = trading_day
+        self.name = name
+        self._lock = Lock()    # 保护下面几个字段
+        self._build = Lock()   # 同一时间只拉一次
+        self._value: Any = None
+        self._fetched_at = None
+        self._restored = restore is None
+        self._refreshing = False
+
+    def _now(self):
+        if self._now_fn is not None:
+            return self._now_fn()
+        from datetime import datetime
+
+        from market_clock import TZ
+        return datetime.now(TZ)
+
+    def _age(self, fetched_at, now) -> float:
+        return (now - fetched_at).total_seconds()
+
+    def _fresh(self, fetched_at, now) -> bool:
+        from market_clock import snapshot_is_final
+        return snapshot_is_final(fetched_at, now, self._trading_day) or self._age(fetched_at, now) < self.fresh_ttl
+
+    def _usable(self, fetched_at, now) -> bool:
+        from market_clock import snapshot_is_final
+        return snapshot_is_final(fetched_at, now, self._trading_day) or self._age(fetched_at, now) < self.stale_ttl
+
+    def snapshot(self) -> Tuple[Any, Any]:
+        """(值, 取数时间)；还没有数据时为 (None, None)。不触发拉取。"""
+        self._restore_once()
+        with self._lock:
+            return self._value, self._fetched_at
+
+    def _restore_once(self) -> None:
+        with self._lock:
+            if self._restored:
+                return
+            self._restored = True
+        try:
+            restored = self._restore() if self._restore else None
+        except Exception:
+            restored = None
+        if restored and restored[0] is not None and self._is_valid(restored[0]):
+            with self._lock:
+                if self._value is None:
+                    self._value, self._fetched_at = restored
+
+    def get(self, force: bool = False) -> Any:
+        value, fetched_at = self.snapshot()
+        if not force and value is not None:
+            now = self._now()
+            if self._fresh(fetched_at, now):
+                return value
+            if self._usable(fetched_at, now):
+                self._refresh_async()
+                return value
+        return self._fetch(force)
+
+    def _fetch(self, force: bool) -> Any:
+        with self._build:
+            value, fetched_at = self.snapshot()
+            usable = value is not None and self._usable(fetched_at, self._now())
+            if not force and value is not None and self._fresh(fetched_at, self._now()):
+                return value  # 等锁期间别人刚拉完
+            if (not force and not usable and self._failed_at is not None
+                    and self._clock() - self._failed_at < self.fail_cooldown):
+                return None  # 刚失败过：冷却期内不再打数据源
+            started = self._now()
+            try:
+                fresh = self.loader()
+            except Exception:
+                fresh = None
+            if fresh is not None and self._is_valid(fresh):
+                with self._lock:
+                    # 记开始拉取的时间：收盘前开始、收盘后才拉完的数据不能算"收盘后的最终状态"
+                    self._value, self._fetched_at = fresh, started
+                    self._failed_at = None
+                if self._store:
+                    try:
+                        self._store(fresh)
+                    except Exception:
+                        pass
+                return fresh
+            if usable:
+                return value
+            self._failed_at = self._clock()
+            return None
+
+    def _refresh_async(self) -> None:
+        import threading
+
+        with self._lock:
+            if self._refreshing:
+                return
+            self._refreshing = True
+
+        def run():
+            try:
+                self._fetch(force=False)
+            finally:
+                with self._lock:
+                    self._refreshing = False
+
+        threading.Thread(target=run, daemon=True, name=self.name).start()
+
+    def is_refreshing(self) -> bool:
+        with self._lock:
+            return self._refreshing
+
+    def clear(self) -> None:
+        """清空数据（测试用）；下次使用会重新调用 restore。"""
+        with self._lock:
+            self._value, self._fetched_at = None, None
+            self._restored = self._restore is None
+            self._failed_at = None
