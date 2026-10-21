@@ -6,6 +6,7 @@ import lowbuy_routes
 import market_routes
 import news_routes
 import scanner_routes
+import watch_routes
 from task_manager import TaskManager
 
 
@@ -24,6 +25,8 @@ def fresh_dashboard_cache():
     caches = (market_routes.DASHBOARD_CACHE, lowbuy_routes._SHARED, news_routes.STOCK_CACHE, news_routes.RADAR_CACHE)
     for cache in caches:
         cache.clear()
+    watch_routes.clear_caches()
     yield
     for cache in caches:
         cache.clear()
+    watch_routes.clear_caches()

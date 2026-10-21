@@ -29,8 +29,9 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `news_weighting.py` / `news_scanner.py` | 消息面计入低吸（第六维修正分）与龙头信心（方案 C）/ 消息催化扫描（方案 D）。设计见 `docs/消息面权重设计.md` |
 | `backtest_lab.py` | 回测实验室（分析台）：在信号复盘数据上做条件组合筛选、指标、收益分布、资金曲线、维度拆解、自动发现、结论翻转、旧回测样本导入。纯函数，接口在 `journal_routes` 的 `/api/lab/*` |
 | `next_day_plan.py` / `plan_routes.py` | 次日预案：收盘后按历史分组统计（收缩 + logit 合成）预测今天涨停股明天继续涨停 / 出★买点的概率；次日 9:25 竞价确认；存档（`plan_items` 表）与滚动验证。接口 `/api/plan`、`/api/plan/validation`、`/api/plan/archive` |
+| `longterm_watch.py` / `watch_routes.py` | 长线观察：读取校验 `data/longterm_watch.json`（方向判断 / 龙头 / 风停信号 / 同花顺分组），A 股龙头配腾讯行情与年内涨幅。接口 `/api/watch`、`/api/watch/quotes` |
 | `signal_journal.py` | 信号复盘：每日梯队 / ★买点 / 昨弱今强 / 作战台候选落库（`outputs/signal_journal.db`），跟踪后 5 日表现（次日开盘 / 当日排板两种口径） |
-| `web/src/` | `pages/`（Dashboard / Scanners / Research / Journal / Backtest / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
+| `web/src/` | `pages/`（Dashboard / Scanners / Research / Plan / Journal / Backtest / Watch / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
 | `tests/unit/` | 离线单元测试（CI 跑这些） |
 | `restart.ps1` / `一键重启服务.bat` | 作者日常用的重启脚本（UAC 提权、结束旧进程、后台启动、等待就绪、检查隧道） |
 
@@ -135,6 +136,15 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - 收益只算买得进的样本并扣往返成本；资金曲线按"资金分 N 份轮动（N=持有天数）"累加当日平均收益 ÷ N。
 - 自动发现只列样本 ≥20 的单维度 / 两两组合，样本相同的重复组合会被去掉；维度拆解样本 <10 置灰。
 - 结论翻转：每天收盘更新后存一次主要信号的结论（次日开盘、持有 3 日、0.3% 成本、近 30 天），与 ≥7 天前比较。
+
+### 长线观察
+- 研究数据只来自 `data/longterm_watch.json`，每月 25 日由定时任务按最新公开资料更新后提交（作者 `git pull` 即生效，接口按文件修改时间重新读取）。
+  手工改这个文件后跑 `pytest tests/unit/test_longterm_watch.py`：`test_repo_data_file_is_valid` 会检查结构（市场 / 代码位数、分组引用、信号灯取值、来源链接）。
+- 字段约定：`market` 为 sh / sz / bj / hk / us / unlisted；A 股代码 6 位、港股 5 位、美股字母；信号灯 `lamp` 只能是 green / yellow / red；
+  每条龙头和信号都必须有 `sources`。一只票可以进多个同花顺分组（`groups`）。
+- 行情只给 A 股；港股 / 美股 / 未上市显示"暂无"。年内涨幅 = 现价 ÷ 去年最后一个交易日收盘价（腾讯前复权日 K）− 1，今年上市的不算。
+- 这是研究清单，不是买入名单：页面和数据里不写买卖建议；"核实"列标出来自媒体梳理或未确认的条目。
+- 同花顺导入文本在前端生成（一行一个 6 位代码、CRLF），不走同花顺的非官方接口，也不读写用户的同花顺账号或本地文件。
 
 ### 数据可信度
 - **取不到数据就显示"暂无"，不要用估算值冒充真实数据**（例：涨跌家数曾按涨停数套固定比例得出假的 50%；

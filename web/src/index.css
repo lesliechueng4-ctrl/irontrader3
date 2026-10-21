@@ -2624,3 +2624,150 @@ a.news-title:hover {
 .plan-charts {
   margin-top: 12px;
 }
+
+/* ---------- 长线观察 ---------- */
+.watch-dirs {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.watch-dir {
+  font: inherit;
+  text-align: left;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 12px 14px;
+  border: 1px solid var(--it-line);
+  border-radius: 8px;
+  background: var(--it-surface);
+  color: var(--it-text);
+  cursor: pointer;
+}
+
+.watch-dir:hover,
+.watch-dir:focus-visible {
+  border-color: var(--it-brand);
+  outline: none;
+}
+
+.watch-dir.is-active {
+  border-color: var(--it-brand);
+  box-shadow: inset 0 0 0 1px var(--it-brand);
+  background: var(--it-brand-soft);
+}
+
+.watch-dir-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.watch-dir-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--it-text-2);
+}
+
+.watch-dir-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.watch-dir-facts dt {
+  color: var(--it-text-3);
+}
+
+.watch-dir-facts dd {
+  margin: 0;
+}
+
+.watch-dir-verdict {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.watch-dir-watch {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.watch-detail {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.watch-detail dt {
+  color: var(--it-text-3);
+}
+
+.watch-detail dd {
+  margin: 0;
+}
+
+.watch-sources {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+.watch-sources a {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.watch-lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.watch-lamp i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.watch-note {
+  margin: 0;
+}
+
+.watch-export {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.watch-steps {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+
+.watch-export-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.watch-export-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+/* 窄屏时方向筛选在自身容器里横向滚动，不撑宽页面 */
+.watch-filter {
+  max-width: 100%;
+  overflow-x: auto;
+}

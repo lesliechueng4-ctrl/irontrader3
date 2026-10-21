@@ -1,0 +1,1161 @@
+{
+  "schema": 1,
+  "as_of": "2026-10-21",
+  "takeaway": "AI 硬件瓶颈利润最厚但最拥挤；创新药出海基本面热、股价偏冷；商业航天最早、技术风险最大；电子发票和长护险更适合职业或经营，没有合适的上市标的。",
+  "disclaimer": "公开资料整理，不构成投资建议；阶段、拥挤度和信号灯是基于来源的判断。",
+  "directions": [
+    {
+      "id": "space",
+      "name": "商业航天·火箭运力",
+      "short": "商业航天",
+      "demand": "✓",
+      "scarcity": "✓",
+      "payer": "✓",
+      "stage": "早",
+      "crowding": "中（概念已炒过一轮）",
+      "entry": "股票（产业链）",
+      "verdict": "卫星扎堆、火箭稀缺：需求被 ITU 部署期限锁定，付钱的是国家星座。最像早期房地产的结构，但技术风险最大。",
+      "watch": "发射次数、可回收火箭复飞、民营火箭 IPO",
+      "no_listed_note": null
+    },
+    {
+      "id": "biotech",
+      "name": "创新药出海",
+      "short": "创新药出海",
+      "demand": "✓",
+      "scarcity": "✓",
+      "payer": "✓",
+      "stage": "中",
+      "crowding": "低（股价偏冷）",
+      "entry": "股票/基金（含港股）",
+      "verdict": "专利悬崖逼大药企买管线，中国是主要卖方；BD 金额继续创纪录，但股价没跟上。",
+      "watch": "BD 总额与首付款、里程碑兑现、海外商业化放量",
+      "no_listed_note": null
+    },
+    {
+      "id": "aihw",
+      "name": "AI 硬件瓶颈",
+      "short": "AI 硬件",
+      "demand": "✓",
+      "scarcity": "✓",
+      "payer": "✓",
+      "stage": "中后",
+      "crowding": "高",
+      "entry": "股票",
+      "verdict": "三条最硬、利润已兑现；但人人都知道，而且全押在同一个 AI 资本开支上。",
+      "watch": "电子布报价、变压器出口增速、DRAM 合约价、燃机交期",
+      "no_listed_note": null
+    },
+    {
+      "id": "einvoice",
+      "name": "欧洲强制电子发票",
+      "short": "电子发票",
+      "demand": "✓",
+      "scarcity": "△",
+      "payer": "✓",
+      "stage": "早",
+      "crowding": "未确认",
+      "entry": "职业技能",
+      "verdict": "法律定了截止日和罚款，企业必须掏钱；适合用职业切入，不是股票机会。",
+      "watch": "各国强制时间表、罚款生效、中资欧洲实体的合规需求",
+      "no_listed_note": "暂无合适的 A 股标的：这条是职业机会（法律强制，有截止日和罚款）"
+    },
+    {
+      "id": "ltc",
+      "name": "长护险照护",
+      "short": "长护险",
+      "demand": "✓",
+      "scarcity": "✓",
+      "payer": "△",
+      "stage": "很早",
+      "crowding": "低",
+      "entry": "经营/就业",
+      "verdict": "需求最确定、护理员缺口大，但付款太薄：试点人均月待遇约 747 元。",
+      "watch": "智能化服务与辅具是否纳入支付、待遇标准、统筹地区扩面",
+      "no_listed_note": "暂无纯正的上市龙头：服务主体多是地方护理服务公司，付款偏薄"
+    }
+  ],
+  "groups": [
+    {
+      "id": "space",
+      "name": "长线·商业航天",
+      "dir": "space",
+      "desc": "火箭产业链：发动机材料、结构件、涡轮泵、3D 打印、传感器"
+    },
+    {
+      "id": "biotech",
+      "name": "长线·创新药",
+      "dir": "biotech",
+      "desc": "对外授权与已商业化的创新药企"
+    },
+    {
+      "id": "glassfab",
+      "name": "长线·电子布",
+      "dir": "aihw",
+      "desc": "AI 服务器 PCB 的电子布（低介电、Low-CTE）"
+    },
+    {
+      "id": "turbine",
+      "name": "长线·燃机",
+      "dir": "aihw",
+      "desc": "燃气轮机整机、机组与叶片"
+    },
+    {
+      "id": "transformer",
+      "name": "长线·变压器",
+      "dir": "aihw",
+      "desc": "变压器出海与数据中心配电"
+    },
+    {
+      "id": "memory",
+      "name": "长线·存储",
+      "dir": "aihw",
+      "desc": "DRAM 原厂、存储芯片、模组与接口芯片"
+    },
+    {
+      "id": "semi_equip",
+      "name": "长线·半导体设备",
+      "dir": "aihw",
+      "desc": "刻蚀、薄膜沉积与光刻设备"
+    }
+  ],
+  "leaders": [
+    {
+      "id": "L01",
+      "dir": "space",
+      "segment": "整箭（可回收）",
+      "name": "蓝箭航天",
+      "market": "unlisted",
+      "code": null,
+      "alt_listing": null,
+      "why": "朱雀三号是国内首款成功入轨并实现陆地回收的运载火箭",
+      "latest": "2026-06-29 科创板 IPO 恢复审核，拟募资 75 亿元",
+      "risk": "尚未上市，上市前只能通过参股或供应链间接参与",
+      "verified": "已核实",
+      "groups": [],
+      "sources": [
+        "https://www.sfccn.com/2026/8-19/3OMDE1MjBfMjIxMzI3OA.html",
+        "https://stock.10jqka.com.cn/20260704/c677947846.shtml"
+      ]
+    },
+    {
+      "id": "L02",
+      "dir": "space",
+      "segment": "发动机推力室内壁",
+      "name": "斯瑞新材",
+      "market": "sh",
+      "code": "688102",
+      "alt_listing": null,
+      "why": "液体火箭发动机推力室内壁供应商，用于朱雀二号；客户含蓝箭、星际荣耀、SpaceX；规划年产 1100 套",
+      "latest": "媒体称其为朱雀三号推力室内壁独家供应商，回收复用后内壁需周期性更换（未见公司公告确认）",
+      "risk": "2025 年股价从 1 月低点最大涨幅约 231%（截至 2025-11）",
+      "verified": "部分来自媒体梳理",
+      "groups": [
+        "space"
+      ],
+      "sources": [
+        "https://www.cls.cn/detail/2214193",
+        "https://m.gelonghui.com/p/5361837"
+      ]
+    },
+    {
+      "id": "L03",
+      "dir": "space",
+      "segment": "箭体结构件",
+      "name": "超捷股份",
+      "market": "sz",
+      "code": "301005",
+      "alt_listing": null,
+      "why": "提供箭体壳段、整流罩、高强度紧固件，配套蓝箭、天兵等头部民营火箭",
+      "latest": "媒体称其为朱雀三号一级尾段、整流罩独家供应商",
+      "risk": "独家地位来自媒体梳理，未见公司公告确认",
+      "verified": "未确认",
+      "groups": [
+        "space"
+      ],
+      "sources": [
+        "https://m.gelonghui.com/p/4672772"
+      ]
+    },
+    {
+      "id": "L04",
+      "dir": "space",
+      "segment": "发动机涡轮泵 / 燃机叶片",
+      "name": "应流股份",
+      "market": "sh",
+      "code": "603308",
+      "alt_listing": null,
+      "why": "为火箭发动机提供涡轮泵、燃烧室等精密铸件，在手订单排至 2027 年；同时是燃气轮机叶片供应商",
+      "latest": "2026-07 贝克休斯到访开展新品认证",
+      "risk": "航天和燃机两个热门主题叠加；2026 年 2 月时年内股价已涨超 50%",
+      "verified": "已核实",
+      "groups": [
+        "space",
+        "turbine"
+      ],
+      "sources": [
+        "https://cj.sina.com.cn/articles/view/2000961721/774440b902001873y",
+        "https://www.yicai.com/news/103289102.html"
+      ]
+    },
+    {
+      "id": "L05",
+      "dir": "space",
+      "segment": "金属 3D 打印",
+      "name": "铂力特",
+      "market": "sh",
+      "code": "688333",
+      "alt_listing": null,
+      "why": "国内金属 3D 打印龙头，零部件用于民用火箭推力室及控制系统",
+      "latest": "三期、四期产能扩建中",
+      "risk": "航天业务在营收中的占比未确认",
+      "verified": "已核实",
+      "groups": [
+        "space"
+      ],
+      "sources": [
+        "https://www.cls.cn/detail/2214193"
+      ]
+    },
+    {
+      "id": "L06",
+      "dir": "space",
+      "segment": "火箭传感器",
+      "name": "高华科技",
+      "market": "sh",
+      "code": "688539",
+      "alt_listing": null,
+      "why": "与头部商业火箭企业有业务合作，提供高可靠传感器",
+      "latest": null,
+      "risk": "具体份额未确认",
+      "verified": "部分来自媒体梳理",
+      "groups": [
+        "space"
+      ],
+      "sources": [
+        "https://stock.10jqka.com.cn/20260704/c677947846.shtml"
+      ]
+    },
+    {
+      "id": "L07",
+      "dir": "biotech",
+      "segment": "大型创新药企",
+      "name": "恒瑞医药",
+      "market": "sh",
+      "code": "600276",
+      "alt_listing": "01276.HK",
+      "why": "2026 年上半年国内新药进展数量第一（30 款）；摩根士丹利列为首选标的",
+      "latest": "与 GSK 合作的首付款为 100% 现金，被视为高质量 BD 的样板",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.phirda.com/artilce_43050.html",
+        "https://www.nbd.com.cn/articles/2026-02-24/4267356.html",
+        "https://www.huxiu.com/article/4827865.html"
+      ]
+    },
+    {
+      "id": "L08",
+      "dir": "biotech",
+      "segment": "已商业化创新药企",
+      "name": "百济神州",
+      "market": "sh",
+      "code": "688235",
+      "alt_listing": "06160.HK",
+      "why": "A/H 创新药公司中营收规模居前",
+      "latest": "2026 年上半年营收 222.2 亿元（+26.8%），归母净利 32.71 亿元（+627%）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.mrjjxw.com/articles/2026-09-14/4581323.html"
+      ]
+    },
+    {
+      "id": "L09",
+      "dir": "biotech",
+      "segment": "抗体平台",
+      "name": "信达生物",
+      "market": "hk",
+      "code": "01801",
+      "alt_listing": null,
+      "why": "2026-02 与礼来就全新分子达成全球研发合作",
+      "latest": "2026 年上半年总收入 86.18 亿元（+44.76%），利润已超过 2025 年全年",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.mrjjxw.com/articles/2026-09-14/4581323.html",
+        "https://www.cls.cn/detail/2291089"
+      ]
+    },
+    {
+      "id": "L10",
+      "dir": "biotech",
+      "segment": "双抗",
+      "name": "荣昌生物",
+      "market": "sh",
+      "code": "688331",
+      "alt_listing": "09995.HK",
+      "why": "PD-1/VEGF 双抗 RC148 于 2026-01 授权艾伯维",
+      "latest": "2026 年上半年归母净利 46.62 亿元，营收 +433%",
+      "risk": "利润主要来自授权收入，持续性要看里程碑",
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.mrjjxw.com/articles/2026-09-14/4581323.html"
+      ]
+    },
+    {
+      "id": "L11",
+      "dir": "biotech",
+      "segment": "双抗",
+      "name": "三生制药",
+      "market": "hk",
+      "code": "01530",
+      "alt_listing": null,
+      "why": "PD-1/VEGF 双抗与辉瑞达成大额合作",
+      "latest": "2026 年上半年 2 款新药首次获批",
+      "risk": "2025 年股价涨超 300%",
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.huxiu.com/article/4827865.html",
+        "https://www.phirda.com/artilce_43050.html"
+      ]
+    },
+    {
+      "id": "L12",
+      "dir": "biotech",
+      "segment": "双抗",
+      "name": "康方生物",
+      "market": "hk",
+      "code": "09926",
+      "alt_listing": null,
+      "why": "依沃西（PD-1/VEGF）由合作方 Summit 于 2025 年底向美国 FDA 递交上市申请",
+      "latest": "FDA 审批结果未确认",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.nbd.com.cn/articles/2026-03-30/4314831.html"
+      ]
+    },
+    {
+      "id": "L13",
+      "dir": "biotech",
+      "segment": "大型创新药企",
+      "name": "中国生物制药",
+      "market": "hk",
+      "code": "01177",
+      "alt_listing": null,
+      "why": "罗伐昔替尼全球权益授权赛诺菲，交易总额 15.3 亿美元（2026-03）",
+      "latest": "2026 年上半年 16 款新药进度变化，1 款首次获批",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "biotech"
+      ],
+      "sources": [
+        "https://www.phirda.com/artilce_43050.html"
+      ]
+    },
+    {
+      "id": "L14",
+      "dir": "aihw",
+      "segment": "电子布（极薄/超薄、Low-CTE）",
+      "name": "宏和科技",
+      "market": "sh",
+      "code": "603256",
+      "alt_listing": null,
+      "why": "2025 年极薄布和超薄布收入全球第一（市占率 20.5%），T 布全球第三",
+      "latest": "2026 年上半年营收 10.5 亿元（+90%），归母净利 3.8 亿元（+334%）",
+      "risk": "2026-06-29 收盘对应 2026 年预测 PE 约 402 倍；已递交港股上市申请",
+      "verified": "已核实",
+      "groups": [
+        "glassfab"
+      ],
+      "sources": [
+        "https://m.gelonghui.com/news/5302702",
+        "https://stock.10jqka.com.cn/20260702/c677896123.shtml"
+      ]
+    },
+    {
+      "id": "L15",
+      "dir": "aihw",
+      "segment": "电子布（二代布/Low-CTE）",
+      "name": "中材科技",
+      "market": "sz",
+      "code": "002080",
+      "alt_listing": null,
+      "why": "大陆 Low-CTE 布与二代布的三家主要玩家之一（泰山玻纤）",
+      "latest": "2026-07-27 电子布板块大涨时涨停",
+      "risk": null,
+      "verified": "来自研报摘要",
+      "groups": [
+        "glassfab"
+      ],
+      "sources": [
+        "https://fxbaogao.com/detail/5368070",
+        "https://www.yicai.com/news/103294378.html"
+      ]
+    },
+    {
+      "id": "L16",
+      "dir": "aihw",
+      "segment": "电子布（二代布）",
+      "name": "国际复材",
+      "market": "sz",
+      "code": "301526",
+      "alt_listing": null,
+      "why": "二代布主流玩家，深度绑定生益科技",
+      "latest": "预计 2026 年上半年归母净利 5.8–6.8 亿元（2025 年全年 2.72 亿元）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "glassfab"
+      ],
+      "sources": [
+        "https://finance.ifeng.com/c/8vG1EQTk75w"
+      ]
+    },
+    {
+      "id": "L17",
+      "dir": "aihw",
+      "segment": "玻纤 / 电子布",
+      "name": "中国巨石",
+      "market": "sh",
+      "code": "600176",
+      "alt_listing": null,
+      "why": "电子布头部公司之一",
+      "latest": "2026 年 5 月起积极扩产",
+      "risk": "龙头扩产本身就是供给将放松的信号",
+      "verified": "已核实",
+      "groups": [
+        "glassfab"
+      ],
+      "sources": [
+        "https://stock.10jqka.com.cn/20260516/c676741247.shtml"
+      ]
+    },
+    {
+      "id": "L18",
+      "dir": "aihw",
+      "segment": "燃气轮机整机（全球）",
+      "name": "GE Vernova",
+      "market": "us",
+      "code": "GEV",
+      "alt_listing": null,
+      "why": "全球燃气轮机龙头",
+      "latest": "2026-07-22 业绩会：大型燃机现在下单最早 2031 年交付",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "turbine"
+      ],
+      "sources": [
+        "https://www.digitaltoday.co.kr/en/view/95919/gas-turbines-emerge-as-new-ai-infrastructure-bottleneck-after-semiconductors"
+      ]
+    },
+    {
+      "id": "L19",
+      "dir": "aihw",
+      "segment": "燃气轮机整机（国产）",
+      "name": "东方电气",
+      "market": "sh",
+      "code": "600875",
+      "alt_listing": "01072.HK",
+      "why": "G50 燃机首次批量进入北美数据中心市场，据机构分析该订单毛利率 40–50%",
+      "latest": "2026 年上半年归母净利 27.13 亿元（+42%）；G50 交付周期约 13 个月",
+      "risk": "2026 年截至 5 月 13 日股价已涨约 68%",
+      "verified": "已核实",
+      "groups": [
+        "turbine"
+      ],
+      "sources": [
+        "https://m.jiemian.com/article/15058341.html",
+        "https://cj.sina.com.cn/articles/view/5925384485/1612e3125001016ja6"
+      ]
+    },
+    {
+      "id": "L20",
+      "dir": "aihw",
+      "segment": "燃机发电机组",
+      "name": "杰瑞股份",
+      "market": "sz",
+      "code": "002353",
+      "alt_listing": null,
+      "why": "斩获超 11 亿美元北美燃气轮机发电机组订单",
+      "latest": null,
+      "risk": "2026 年截至 5 月 13 日股价已涨约 110%",
+      "verified": "已核实",
+      "groups": [
+        "turbine"
+      ],
+      "sources": [
+        "https://cj.sina.com.cn/articles/view/5925384485/1612e3125001016ja6"
+      ]
+    },
+    {
+      "id": "L21",
+      "dir": "aihw",
+      "segment": "燃机整机 / 动力",
+      "name": "中国动力",
+      "market": "sh",
+      "code": "600482",
+      "alt_listing": null,
+      "why": "2025 年海外燃机新签供货订单同比 +40.7%",
+      "latest": null,
+      "risk": "2026 年截至 5 月 13 日股价已涨约 100%",
+      "verified": "已核实",
+      "groups": [
+        "turbine"
+      ],
+      "sources": [
+        "https://cj.sina.com.cn/articles/view/5925384485/1612e3125001016ja6"
+      ]
+    },
+    {
+      "id": "L22",
+      "dir": "aihw",
+      "segment": "变压器出海",
+      "name": "思源电气",
+      "market": "sz",
+      "code": "002028",
+      "alt_listing": null,
+      "why": "国内变压器出海龙头，交期 6–9 个月，远短于美国本土 2–3 年",
+      "latest": "公司证券部称北美同规格价格为国内数倍、毛利超 50%；2026-06 公告投资 4.8 亿元扩产",
+      "risk": "公司对北美市场前景表态审慎",
+      "verified": "已核实",
+      "groups": [
+        "transformer"
+      ],
+      "sources": [
+        "https://www.cls.cn/detail/2399113",
+        "https://pdf.dfcfw.com/pdf/H3_AP202608181828083865_1.pdf"
+      ]
+    },
+    {
+      "id": "L23",
+      "dir": "aihw",
+      "segment": "超高压变压器",
+      "name": "特变电工",
+      "market": "sh",
+      "code": "600089",
+      "alt_listing": null,
+      "why": "2025-08 中标沙特电力公司 24 亿美元大单",
+      "latest": "2026 年一季度输变电单机国际签约约 6.21 亿美元（+30%）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "transformer"
+      ],
+      "sources": [
+        "https://paper.cnstock.com/html/2026-05/15/content_2216987.htm",
+        "https://cj.sina.com.cn/articles/view/2868676035/aafc85c302001r4be"
+      ]
+    },
+    {
+      "id": "L24",
+      "dir": "aihw",
+      "segment": "干式变压器 / 数据中心",
+      "name": "金盘科技",
+      "market": "sh",
+      "code": "688676",
+      "alt_listing": null,
+      "why": "2026-01 与海外客户签订 6.96 亿元电力产品供货合同，在手订单饱满",
+      "latest": "布局固态变压器",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "transformer"
+      ],
+      "sources": [
+        "https://www.nbd.com.cn/articles/2026-01-13/4217985.html",
+        "https://www.cls.cn/detail/2250962"
+      ]
+    },
+    {
+      "id": "L25",
+      "dir": "aihw",
+      "segment": "变压器 / 固态变压器",
+      "name": "伊戈尔",
+      "market": "sz",
+      "code": "002922",
+      "alt_listing": null,
+      "why": "在手订单饱满",
+      "latest": "公司称固态变压器 2028 年才可能有十台以上的商业化订单",
+      "risk": "固态变压器概念被热捧，但订单尚远",
+      "verified": "已核实",
+      "groups": [
+        "transformer"
+      ],
+      "sources": [
+        "https://www.nbd.com.cn/articles/2026-01-13/4217985.html",
+        "https://www.cls.cn/detail/2399113"
+      ]
+    },
+    {
+      "id": "L26",
+      "dir": "aihw",
+      "segment": "输变电设备（央企）",
+      "name": "中国西电",
+      "market": "sh",
+      "code": "601179",
+      "alt_listing": null,
+      "why": "2025 年海外营收 +54%，订单饱满",
+      "latest": "2026 年一季度中标巴拉圭、加拿大、波多黎各等地变压器订单",
+      "risk": "国企身份在欧美有准入壁垒，海外毛利率低于国内",
+      "verified": "已核实",
+      "groups": [
+        "transformer"
+      ],
+      "sources": [
+        "https://www.cls.cn/detail/2399113",
+        "https://paper.cnstock.com/html/2026-05/15/content_2216987.htm"
+      ]
+    },
+    {
+      "id": "L27",
+      "dir": "aihw",
+      "segment": "DRAM 原厂",
+      "name": "长鑫科技",
+      "market": "sh",
+      "code": "688825",
+      "alt_listing": null,
+      "why": "国产 DRAM 龙头",
+      "latest": "预计 2026 年前三季度归母净利 1310–1325 亿元（去年同期亏 52.8 亿元）；三季度环比约 +1–3%",
+      "risk": "市值约 3.06 万亿元；上市首日涨近 470%",
+      "verified": "已核实",
+      "groups": [
+        "memory"
+      ],
+      "sources": [
+        "https://static.cninfo.com.cn/finalpage/2026-10-17/1225609860.PDF",
+        "https://www.mrjjxw.com/articles/2026-10-16/4607200.html"
+      ]
+    },
+    {
+      "id": "L28",
+      "dir": "aihw",
+      "segment": "存储芯片设计",
+      "name": "兆易创新",
+      "market": "sh",
+      "code": "603986",
+      "alt_listing": null,
+      "why": "A 股存储芯片设计龙头",
+      "latest": "2026 年上半年营收 115.66 亿元（+179%），净利 68.57 亿元（+1092%）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "memory"
+      ],
+      "sources": [
+        "https://www.yicai.com/news/103323216.html",
+        "https://wallstreetcn.com/articles/3777788"
+      ]
+    },
+    {
+      "id": "L29",
+      "dir": "aihw",
+      "segment": "存储模组 / 品牌",
+      "name": "江波龙",
+      "market": "sz",
+      "code": "301308",
+      "alt_listing": null,
+      "why": "国内存储模组与品牌龙头（Lexar）",
+      "latest": "预计前三季度归母净利 140–149 亿元；公司称三季度涨价对利润的边际贡献显著趋缓",
+      "risk": "上半年经营现金流为负、长期借款大增",
+      "verified": "已核实",
+      "groups": [
+        "memory"
+      ],
+      "sources": [
+        "https://m.rccaijing.com/news-7516657513946347087.html",
+        "https://www.yicai.com/news/103323216.html"
+      ]
+    },
+    {
+      "id": "L30",
+      "dir": "aihw",
+      "segment": "内存接口芯片",
+      "name": "澜起科技",
+      "market": "sh",
+      "code": "688008",
+      "alt_listing": null,
+      "why": "内存接口芯片全球龙头，DDR5 RCD 出货增加",
+      "latest": "2026 年一季度归母净利 8.47 亿元（+61%）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "memory"
+      ],
+      "sources": [
+        "https://www.yzwb.net/news/ch/202604/t20260428_347259.html",
+        "https://mtz.china.com/touzi/2026/0709/247491.html"
+      ]
+    },
+    {
+      "id": "L31",
+      "dir": "aihw",
+      "segment": "存储模组 / 企业级",
+      "name": "德明利",
+      "market": "sz",
+      "code": "001309",
+      "alt_listing": null,
+      "why": "企业级存储已在国内头部云服务商批量出货",
+      "latest": "预计前三季度归母净利 86.5–89.5 亿元（去年同期亏损）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "memory"
+      ],
+      "sources": [
+        "https://finance.sina.cn/2026-10-16/detail-inivmyex7489119.d.html?vt=4"
+      ]
+    },
+    {
+      "id": "L32",
+      "dir": "aihw",
+      "segment": "刻蚀 / 薄膜设备",
+      "name": "北方华创",
+      "market": "sz",
+      "code": "002371",
+      "alt_listing": null,
+      "why": "国内刻蚀两强之一；2025 年薄膜沉积收入超百亿元",
+      "latest": "2026 年一季度营收 103.23 亿元（+25.8%）",
+      "risk": "研发投入高，一季度归母净利仅 +3.4%",
+      "verified": "已核实",
+      "groups": [
+        "semi_equip"
+      ],
+      "sources": [
+        "https://www.yicai.com/news/103190176.html",
+        "https://www.huxiu.com/article/4872744.html"
+      ]
+    },
+    {
+      "id": "L33",
+      "dir": "aihw",
+      "segment": "刻蚀设备",
+      "name": "中微公司",
+      "market": "sh",
+      "code": "688012",
+      "alt_listing": null,
+      "why": "国内刻蚀两强之一；收购杭州众硅切入 CMP",
+      "latest": "2026 年一季度归母净利 9.30 亿元（+197%）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "semi_equip"
+      ],
+      "sources": [
+        "https://www.yicai.com/news/103190176.html",
+        "https://m.gelonghui.com/p/5470518"
+      ]
+    },
+    {
+      "id": "L34",
+      "dir": "aihw",
+      "segment": "薄膜沉积设备",
+      "name": "拓荆科技",
+      "market": "sh",
+      "code": "688072",
+      "alt_listing": null,
+      "why": "存储扩产的核心受益方之一",
+      "latest": "2026 年一季度营收 +57%，归母净利 5.71 亿元（扭亏）",
+      "risk": null,
+      "verified": "已核实",
+      "groups": [
+        "semi_equip"
+      ],
+      "sources": [
+        "https://www.yicai.com/news/103190176.html",
+        "https://www.36kr.com/p/3749398587064834"
+      ]
+    },
+    {
+      "id": "L35",
+      "dir": "aihw",
+      "segment": "光刻机（全球垄断）",
+      "name": "ASML",
+      "market": "us",
+      "code": "ASML",
+      "alt_listing": null,
+      "why": "称 2027、2028 年即使各扩产 30% 仍满足不了订单",
+      "latest": "上调 2026 年营收指引下限至 440 亿欧元",
+      "risk": "中国约占今年营收的五分之一，有出口管制敞口",
+      "verified": "已核实",
+      "groups": [
+        "semi_equip"
+      ],
+      "sources": [
+        "https://www.trendforce.com/news/?p=65274",
+        "https://thenextweb.com/news/asml-q3-capacity-2030-orders"
+      ]
+    }
+  ],
+  "signals": [
+    {
+      "id": "S01",
+      "dir": "aihw",
+      "name": "电子布价格",
+      "reading": "主流 7628 电子布均价约 8.5 元/米，较 2025 年三季度低点涨约 100%；低介电二代布约 160 元/米，较年初翻倍",
+      "data_time": "2026-07 初",
+      "trend": "仍在上涨",
+      "lamp": "green",
+      "note": "AI 服务器 PCB 层数翻几倍，单机电子布用量提升 3–5 倍；供给被织布机和电子纱双重卡住",
+      "sources": [
+        "https://m.gelonghui.com/p/5893471"
+      ]
+    },
+    {
+      "id": "S02",
+      "dir": "aihw",
+      "name": "高端织布机交期",
+      "reading": "丰田工业占全球高端电子布织布机八成以上，新订单交付排到 2028 年；广发测算国内织布机缺口 2026 年约 608 台、2027 年约 1050 台",
+      "data_time": "2026-07",
+      "trend": "缺口扩大",
+      "lamp": "green",
+      "note": "这是瓶颈的瓶颈：织布机交期不缩短，高端电子布就难放量",
+      "sources": [
+        "https://news.10jqka.com.cn/20260728/c678492137.shtml"
+      ]
+    },
+    {
+      "id": "S03",
+      "dir": "aihw",
+      "name": "变压器出口",
+      "reading": "2025 年出口 646 亿元（+36%）；2026 年 1–4 月 217.7 亿元（+27%），4 月单月 +8%，单台均价同比涨约三分之一",
+      "data_time": "2026-04",
+      "trend": "量增放缓、价仍升",
+      "lamp": "yellow",
+      "note": "业内预判高景气至少还能看 2–3 年；花旗测算 2029 年起年度供给略高于需求",
+      "sources": [
+        "https://cj.sina.com.cn/articles/view/2868676035/aafc85c302001r4be",
+        "https://m.huxiu.com/article/4842841.html"
+      ]
+    },
+    {
+      "id": "S04",
+      "dir": "aihw",
+      "name": "燃气轮机供需",
+      "reading": "截至 2025 年底全球燃机订单约 110GW，年产能只有 60–70GW；价格预计到 2027 年底升至每千瓦 600 美元",
+      "data_time": "2026-04",
+      "trend": "缺口仍大",
+      "lamp": "green",
+      "note": "伍德麦肯兹预计 2026 年订单达到顶峰；订单见顶之后要看交期是否开始缩短",
+      "sources": [
+        "https://www.cls.cn/detail/2332948"
+      ]
+    },
+    {
+      "id": "S05",
+      "dir": "aihw",
+      "name": "燃机交期",
+      "reading": "GE Vernova：大型燃机现在下单最早 2031 年交付；三菱重工 2026 年 3–6 月签下的项目排到 2028–2030 年交付",
+      "data_time": "2026-07",
+      "trend": "交期仍长",
+      "lamp": "green",
+      "note": "交期是燃机供需最直接的读数：开始缩短才说明供给追上来了",
+      "sources": [
+        "https://www.digitaltoday.co.kr/en/view/95919/gas-turbines-emerge-as-new-ai-infrastructure-bottleneck-after-semiconductors"
+      ]
+    },
+    {
+      "id": "S06",
+      "dir": "aihw",
+      "name": "DRAM 合约价",
+      "reading": "集邦预估一般型 DRAM 合约价环比：2026 年二季度 +58–63%，三季度 +13–18%",
+      "data_time": "2026 年三季度",
+      "trend": "涨幅收窄",
+      "lamp": "yellow",
+      "note": "还在涨，但涨幅明显收窄；和美光的判断有分歧（见下一条）",
+      "sources": [
+        "https://news.10jqka.com.cn/20260706/c677958816.shtml",
+        "https://www.36kr.com/p/3804471429046277"
+      ]
+    },
+    {
+      "id": "S07",
+      "dir": "aihw",
+      "name": "存储原厂口径",
+      "reading": "美光：2027、2028 年供需比 2026 年更紧，看不到恢复平衡的时间点；集邦则预计 NAND 紧缺 2027 年下半年改善",
+      "data_time": "2026-10 报道",
+      "trend": "信号分歧",
+      "lamp": "yellow",
+      "note": "原厂说更紧、研究机构说会缓解，要看后续合约价走向",
+      "sources": [
+        "https://www.videogameschronicle.com/news/memory-maker-warns-shortages-will-get-worse-in-2027-as-ceo-celebrates-much-higher-prices/",
+        "https://www.webull.com/news/15263956714857472"
+      ]
+    },
+    {
+      "id": "S08",
+      "dir": "aihw",
+      "name": "存储龙头利润环比",
+      "reading": "长鑫科技预计三季度归母净利 534–549 亿元，环比仅 +1–3%；江波龙称三季度涨价对利润的边际贡献显著趋缓",
+      "data_time": "2026 年三季度",
+      "trend": "增速见顶迹象",
+      "lamp": "yellow",
+      "note": "价格还在涨，但利润弹性在变小",
+      "sources": [
+        "https://www.cls.cn/detail/2507247",
+        "https://m.rccaijing.com/news-7516657513946347087.html"
+      ]
+    },
+    {
+      "id": "S09",
+      "dir": "aihw",
+      "name": "光刻机产能",
+      "reading": "ASML：即使 2027、2028 年各扩产 30%，仍满足不了订单；已有客户预订到 2029–2030 年",
+      "data_time": "2026-10",
+      "trend": "仍在收紧",
+      "lamp": "green",
+      "note": "设备满单说明晶圆厂还在扩产，这些产能几年后就是新增供给",
+      "sources": [
+        "https://www.trendforce.com/news/?p=65274"
+      ]
+    },
+    {
+      "id": "S10",
+      "dir": "aihw",
+      "name": "芯片股波动",
+      "reading": "2026-06-05 费城半导体指数单日跌 10.3%，美股芯片股市值蒸发约 1.3 万亿美元；7 月又有多轮抛售",
+      "data_time": "2026-06/07",
+      "trend": "拥挤",
+      "lamp": "red",
+      "note": "基本面没变时出现巨震，说明预期已经很满",
+      "sources": [
+        "https://www.nst.com.my/amp/business/corporate/2026/06/1456534/chip-slump-erases-us13-trillion-stock-market-value",
+        "https://www.nst.com.my/amp/business/corporate/2026/07/1483229/nasdaq-sinks-ai-worries-hit-chipmakers"
+      ]
+    },
+    {
+      "id": "S11",
+      "dir": "aihw",
+      "name": "云厂资本开支",
+      "reading": "谷歌、亚马逊、微软、Meta 2026 年资本开支计划合计约 7250 亿美元，同比 +77%，其后多家又上调",
+      "data_time": "2026-10 报道",
+      "trend": "仍在扩张",
+      "lamp": "green",
+      "note": "这是所有 AI 硬件瓶颈的总闸门；它一转向，各环节会一起受冲击",
+      "sources": [
+        "https://www.tweaktown.com/rss/click/news/114104/?c=news-mf"
+      ]
+    },
+    {
+      "id": "S12",
+      "dir": "biotech",
+      "name": "对外授权总额",
+      "reading": "2025 年约 1357 亿美元；2026 年上半年 81 笔、约 1100 亿美元，已达去年全年八成",
+      "data_time": "2026 年上半年",
+      "trend": "继续创纪录",
+      "lamp": "green",
+      "note": "上半年全球前十大 BD 中，有 8 笔的卖方是中国药企",
+      "sources": [
+        "https://www.mrjjxw.com/articles/2026-09-14/4581323.html",
+        "https://www.itiger.com/news/1199302250"
+      ]
+    },
+    {
+      "id": "S13",
+      "dir": "biotech",
+      "name": "股价温度",
+      "reading": "2025 年 9 月起板块明显回调，个股最大跌幅接近腰斩；2026 年以来板块整体回落，BD 未反映到股价",
+      "data_time": "2026 年中",
+      "trend": "偏冷",
+      "lamp": "yellow",
+      "note": "基本面热、股价冷，说明拥挤度低，也可能是市场在质疑 BD 的含金量",
+      "sources": [
+        "https://www.huxiu.com/article/4827865.html",
+        "https://m.gelonghui.com/p/5320440"
+      ]
+    },
+    {
+      "id": "S14",
+      "dir": "biotech",
+      "name": "专利悬崖规模",
+      "reading": "摩根士丹利估计，大型药企 1710 亿美元的 2025 年收入将在 2030 年底前失去专利保护",
+      "data_time": "2026",
+      "trend": "需求确定",
+      "lamp": "green",
+      "note": "这就是付钱方的来源：大药企必须买管线补缺口",
+      "sources": [
+        "https://www.scmp.com/business/china-business/article/3337038/patent-cliffhanger-will-china-biotech-throw-big-pharma-lifeline"
+      ]
+    },
+    {
+      "id": "S15",
+      "dir": "biotech",
+      "name": "里程碑兑现率",
+      "reading": "SRS Acquiom 统计：过去 9 年生物医药 BD 中 60% 以上的里程碑未能达成，阶段越往后兑现率越低",
+      "data_time": "2026-09 报道",
+      "trend": "风险",
+      "lamp": "red",
+      "note": "BD 总额要打折看，首付款和现金占比更关键",
+      "sources": [
+        "https://www.mrjjxw.com/articles/2026-09-14/4581323.html"
+      ]
+    },
+    {
+      "id": "S16",
+      "dir": "space",
+      "name": "发射次数",
+      "reading": "2026 年上半年全国航天发射 44 次（商业 30 次）；蓝箭航天高管测算年均需要约 300 发；2026 年全年有望首次突破 100 次",
+      "data_time": "2026 年上半年",
+      "trend": "缺口巨大",
+      "lamp": "green",
+      "note": "运力是整条链的瓶颈，发射次数是最直接的读数",
+      "sources": [
+        "https://m.huxiu.com/article/4892674.html?type=text",
+        "https://cbgc.scol.com.cn/news/7953655"
+      ]
+    },
+    {
+      "id": "S17",
+      "dir": "space",
+      "name": "卫星产能对运力",
+      "reading": "全国 55 个卫星工厂设计年产能约 7360 颗；按 ITU 规则约 7 年内需部署约 2 万颗",
+      "data_time": "2026-09",
+      "trend": "火箭端稀缺",
+      "lamp": "green",
+      "note": "卫星端产能充裕，稀缺在运力和发射工位",
+      "sources": [
+        "https://m.huxiu.com/article/4892674.html?type=text"
+      ]
+    },
+    {
+      "id": "S18",
+      "dir": "space",
+      "name": "可回收火箭",
+      "reading": "朱雀三号 2026-08-19 一子级陆地回收成功，成为国内首款成功入轨并实现陆地回收的运载火箭",
+      "data_time": "2026-08",
+      "trend": "技术突破",
+      "lamp": "green",
+      "note": "复用跑通后，下一个要看的是复飞频次和单次发射成本",
+      "sources": [
+        "https://www.sfccn.com/2026/8-19/3OMDE1MjBfMjIxMzI3OA.html"
+      ]
+    },
+    {
+      "id": "S19",
+      "dir": "space",
+      "name": "民营火箭 IPO",
+      "reading": "蓝箭航天 2026-06-29 科创板恢复审核（拟募资 75 亿元）；中科宇航 3 月获受理；天兵科技、星际荣耀在辅导",
+      "data_time": "2026-07",
+      "trend": "推进中",
+      "lamp": "green",
+      "note": "整箭公司上市后，才有直接买火箭本身的标的",
+      "sources": [
+        "https://stock.10jqka.com.cn/20260704/c677947846.shtml"
+      ]
+    },
+    {
+      "id": "S20",
+      "dir": "space",
+      "name": "板块温度",
+      "reading": "A 股商业航天板块 2025 年底一轮急涨后，2026 年截至 6 月 12 日下跌 13.73%",
+      "data_time": "2026-06",
+      "trend": "降温",
+      "lamp": "yellow",
+      "note": "概念热度已退一轮，后面更看业绩兑现",
+      "sources": [
+        "https://www.yicai.com/vip/news/103227865.html"
+      ]
+    },
+    {
+      "id": "S21",
+      "dir": "einvoice",
+      "name": "强制时间表",
+      "reading": "比利时 2026-01-01、波兰 2026 年 2 月和 4 月（2027-01-01 起罚款）、法国 2026-09-01、德国 2027–28 年陆续强制 B2B 电子发票",
+      "data_time": "2026-07",
+      "trend": "陆续生效",
+      "lamp": "green",
+      "note": "截止日和罚款逼着企业掏钱；懂税又懂系统的实施人才是否稀缺，未确认",
+      "sources": [
+        "https://beancount.io/blog/2026/07/09/e-invoicing-2026-mandates-us-exporters-saas-sellers-guide",
+        "https://www.truecommerce.com/blog/e-invoicing-in-poland-your-guide-to-the-ksef-mandate/"
+      ]
+    },
+    {
+      "id": "S22",
+      "dir": "ltc",
+      "name": "制度进度",
+      "reading": "中办、国办 2026-03-25 发文，长护险从试点转向全国推行，2028 年底基本全覆盖",
+      "data_time": "2026-03",
+      "trend": "推进中",
+      "lamp": "green",
+      "note": "相当于给失能照护装上了付款方",
+      "sources": [
+        "https://www.news.cn/politics/zywj/20260325/71e216ae767b487491ba1d9dbf9cf57d/c.html"
+      ]
+    },
+    {
+      "id": "S23",
+      "dir": "ltc",
+      "name": "参保扩面",
+      "reading": "参保超 3.2 亿人，2026 年底将拓展至 247 个统筹地区",
+      "data_time": "2026-09",
+      "trend": "扩面中",
+      "lamp": "green",
+      "note": "覆盖人群正从职工向城乡居民延伸",
+      "sources": [
+        "https://m.voc.com.cn/xhn/news/202609/33668970.html"
+      ]
+    },
+    {
+      "id": "S24",
+      "dir": "ltc",
+      "name": "服务供给",
+      "reading": "全国定点长护服务机构 1.2 万家、从业约 37 万人；长期照护师超过 1 万人",
+      "data_time": "2026-03",
+      "trend": "缺口大",
+      "lamp": "green",
+      "note": "业内称护理员缺口以百万计",
+      "sources": [
+        "https://www.news.cn/20260330/525fcc6bb03a485c83201369363d17a7/c.html",
+        "https://www.sfccn.com/2026/4-14/4OMDE0MDZfMjEyOTc4OA.html"
+      ]
+    },
+    {
+      "id": "S25",
+      "dir": "ltc",
+      "name": "待遇对成本",
+      "reading": "试点人均月待遇约 747 元，大城市实际照护成本 2000–6000 元；社保长护险首年筹资估计不足 2000 亿元",
+      "data_time": "2026-04",
+      "trend": "付款偏薄",
+      "lamp": "red",
+      "note": "付款不够厚，照护服务很难像当年房地产那样捡钱",
+      "sources": [
+        "https://www.sfccn.com/2026/4-14/4OMDE0MDZfMjEyOTc4OA.html"
+      ]
+    },
+    {
+      "id": "S26",
+      "dir": "ltc",
+      "name": "支付扩围",
+      "reading": "国家医保局表示将研究把长期护理相关的智能化服务和辅助器具纳入支付范围",
+      "data_time": "2026-03",
+      "trend": "研究中",
+      "lamp": "yellow",
+      "note": "一旦落地，辅具和智能照护就多了一个付款方；目前尚未落地",
+      "sources": [
+        "https://www.news.cn/20260330/525fcc6bb03a485c83201369363d17a7/c.html"
+      ]
+    }
+  ]
+}

@@ -14,6 +14,7 @@ const Research = lazy(() => import('./pages/Research'));
 const Backtest = lazy(() => import('./pages/Backtest'));
 const Journal = lazy(() => import('./pages/Journal'));
 const Plan = lazy(() => import('./pages/Plan'));
+const Watch = lazy(() => import('./pages/Watch'));
 const Accounts = lazy(() => import('./pages/Accounts'));
 
 export interface StockTarget {
@@ -28,6 +29,7 @@ const NAV = [
   { key: '/plan', label: '次日预案' },
   { key: '/journal', label: '信号复盘' },
   { key: '/backtest', label: '回测实验室' },
+  { key: '/watch', label: '长线观察' },
 ];
 
 export default function App() {
@@ -116,6 +118,7 @@ export default function App() {
             <Route path="/plan" element={<Plan />} />
             <Route path="/journal" element={<Journal />} />
             <Route path="/backtest" element={<Backtest />} />
+            <Route path="/watch" element={<Watch />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
