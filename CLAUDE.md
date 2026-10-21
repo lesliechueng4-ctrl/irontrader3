@@ -29,6 +29,10 @@ A 股短线交易辅助系统（情绪周期 / 龙头梯队 / 低吸评分 / 日
 | `news_weighting.py` / `news_scanner.py` | 消息面计入低吸（第六维修正分）与龙头信心（方案 C）/ 消息催化扫描（方案 D）。设计见 `docs/消息面权重设计.md` |
 | `backtest_lab.py` | 回测实验室（分析台）：在信号复盘数据上做条件组合筛选、指标、收益分布、资金曲线、维度拆解、自动发现、结论翻转、旧回测样本导入。纯函数，接口在 `journal_routes` 的 `/api/lab/*` |
 | `next_day_plan.py` / `plan_routes.py` | 次日预案：收盘后按历史分组统计（收缩 + logit 合成）预测今天涨停股明天继续涨停 / 出★买点的概率；次日 9:25 竞价确认；存档（`plan_items` 表）与滚动验证。接口 `/api/plan`、`/api/plan/validation`、`/api/plan/archive` |
+| `net_policy.py` | 启动时把国内行情域名写进 `NO_PROXY`：AKShare 等普通 requests 请求直连，不走系统代理（Clash） |
+| `market_clock.py` | 行情时钟：是否"行情在变"（交易日 09:15–11:32、13:00–15:02）、最近一次收盘时间、快照是否已是收盘后的最终状态 |
+| `sina_spot_client.py` | 新浪全市场分页行情；`get_shared_spot_frame()` 是进程内共享的全市场快照（单飞、收盘后不重拉） |
+| `stock_directory.py` | 搜索联想用的股票名单：新浪快照为主、AKShare 交易所名单兜底，落盘 7 天、后台构建、请求最多等 2 秒 |
 | `longterm_watch.py` / `watch_routes.py` | 长线观察：读取校验 `data/longterm_watch.json`（方向判断 / 龙头 / 风停信号 / 同花顺分组），A 股龙头配腾讯行情与年内涨幅。接口 `/api/watch`、`/api/watch/quotes` |
 | `signal_journal.py` | 信号复盘：每日梯队 / ★买点 / 昨弱今强 / 作战台候选落库（`outputs/signal_journal.db`），跟踪后 5 日表现（次日开盘 / 当日排板两种口径） |
 | `web/src/` | `pages/`（Dashboard / Scanners / Research / Plan / Journal / Backtest / Watch / Accounts）、`components/`、`api/`（client + hooks + 类型）、`theme.ts` |
@@ -146,6 +150,19 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 - 这是研究清单，不是买入名单：页面和数据里不写买卖建议；"核实"列标出来自媒体梳理或未确认的条目。
 - 同花顺导入文本在前端生成（一行一个 6 位代码、CRLF），不走同花顺的非官方接口，也不读写用户的同花顺账号或本地文件。
 
+### 性能与数据源（2026-10 卡顿排查后定下的规矩）
+- 服务只有 8 个线程（waitress），任何一个请求里同步跑几十秒的取数，几下就能把整个网站卡死（`server_console.log` 里的
+  `Task queue depth` 就是排队数）。新代码别在请求线程里做长耗时取数：用 SwrCache / 单飞 / 后台线程，取不到就先返回"暂无"。
+- 国内行情网站直连：`net_policy.apply_domestic_direct()` 在 `app.py` 最前面执行。经 Clash 访问东方财富 59 页全市场要 70~90 秒，
+  上交所报 ProxyError、深交所读超时。新增数据源域名时把它加进 `DOMESTIC_MARKET_DOMAINS`。
+- 全市场快照统一用 `sina_spot_client.get_shared_spot_frame()`（或 `DataFetcher.get_market_spot_frame()`）：进程内一份、
+  同一时间只拉一次、午休 / 收盘后 / 节假日只要快照取于最近一次收盘之后就不重拉。不要在请求路径里再直接调 `ak.stock_zh_a_spot_em()`。
+- 情绪闸：快照新浪优先、东财兜底；落盘到 `cache/emotion_spot.json`。重启时盘中 30 分钟内的落盘快照先顶上并标 `stale`
+  （执行闸显示"情绪数据陈旧"、暂停开仓），后台刷新完就恢复；这种结果不进 3 分钟结果缓存，也不用旧快照重建龙头池。
+- 龙头池日 K 走腾讯（`signal_journal.tencent_bars`，直连、可并发），只取已收盘的交易日（15:10 前不含当天），与原新浪日 K 口径一致。
+  `DataFetcher.get_stock_history` 里的全局锁只包新浪日 K（`stock_zh_a_daily` 每次新建 py_mini_racer 引擎，不能并发）。
+- 搜索名单走 `stock_directory`（`market_routes.get_stock_directory()`），不要再在请求里调 `ak.stock_info_a_code_name()`。
+
 ### 数据可信度
 - **取不到数据就显示"暂无"，不要用估算值冒充真实数据**（例：涨跌家数曾按涨停数套固定比例得出假的 50%；
   炸板率曾默认 15%）。确实需要兜底时，字段里标明来源 / `*_available: false`，前端要显示出来。
@@ -177,6 +194,7 @@ CI（`.github/workflows/ci.yml`）在推送 master 时并行跑"后端测试"和
 | `IRONTRADER_PREWARM` | 1 | 设 0 关闭首页数据预热线程 |
 | `IRONTRADER_LIVE_TESTS` | 未设置 | 设 1 运行需要实时行情的测试 |
 | `IRONTRADER_JOURNAL` | 1 | 设 0 关闭信号复盘的自动记录线程 |
+| `IRONTRADER_DIRECT_DOMESTIC` | 1 | 设 0 关闭国内行情域名直连（AKShare 请求改按系统代理走） |
 | `IRONTRADER_NEWS` | 1 | 设 0 关闭消息面接入（低吸第六维、龙头信心、研报都按"暂无"处理） |
 | `LOG_RETENTION_DAYS` | 14 | 旧日志保留天数，0 关闭清理 |
 | `CORS_ALLOWED_ORIGINS` | 本机 + Vite | 允许跨域的来源 |

@@ -9,8 +9,10 @@ low_buy_engine / counter_trend_hero / stock_screener_2 等模块复用，
 ThreadPoolExecutor 并发获取，相比原先的纯串行分页明显提速。
 """
 
+import threading as _threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from datetime import datetime as _datetime
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -173,3 +175,66 @@ class SinaSpotClient:
             name = item.get("name", "")
             records.append({"code": str(code).zfill(6), "name": name})
         return records
+
+
+# ---------------------------------------------------------------------------
+# 进程内共享的全市场快照
+# ---------------------------------------------------------------------------
+# 情绪闸（龙头池 / 大面率）、低吸周期（涨跌家数）、搜索名单都要全市场行情。
+# 以前各拉各的，同一时刻可能有两三份 56 页的请求在跑；这里共用一份：
+# - 同一时间只拉一次，其他调用方等这一次的结果（单飞）；
+# - 盘中按调用方给的 max_age 判断新旧；午休、收盘后、节假日只要快照取于最近一次收盘之后，
+#   就一直算新的，不再重拉（见 market_clock.snapshot_is_final）。
+
+_SHARED_LOCK = _threading.Lock()      # 保护下面的状态
+_SHARED_BUILD = _threading.Lock()     # 单飞：同一时间只有一个线程在拉
+_SHARED_STATE: Dict[str, object] = {"frame": None, "fetched_at": None}
+
+
+def shared_spot_snapshot() -> Tuple[Optional[pd.DataFrame], Optional[_datetime]]:
+    """当前共享快照（不触发拉取）：(frame, 拉取时间)。"""
+    with _SHARED_LOCK:
+        return _SHARED_STATE["frame"], _SHARED_STATE["fetched_at"]  # type: ignore[return-value]
+
+
+def _is_fresh(fetched_at: Optional[_datetime], max_age: float, now: _datetime,
+              trading_day=None) -> bool:
+    if fetched_at is None:
+        return False
+    from market_clock import snapshot_is_final
+
+    if snapshot_is_final(fetched_at, now, trading_day):
+        return True
+    return (now - fetched_at).total_seconds() < max_age
+
+
+def get_shared_spot_frame(source_client: Optional[DataSourceClient] = None, max_age: float = 60.0,
+                          now_fn=None, trading_day=None, client_factory=None) -> pd.DataFrame:
+    """取共享的新浪全市场快照；不够新就拉一次（单飞）。拉取失败抛异常，调用方按数据源失败降级。"""
+    from market_clock import TZ
+
+    now_fn = now_fn or (lambda: _datetime.now(TZ))
+    frame, fetched_at = shared_spot_snapshot()
+    if frame is not None and _is_fresh(fetched_at, max_age, now_fn(), trading_day):
+        return frame
+    with _SHARED_BUILD:
+        # 等锁期间别的线程可能已经拉完
+        frame, fetched_at = shared_spot_snapshot()
+        if frame is not None and _is_fresh(fetched_at, max_age, now_fn(), trading_day):
+            return frame
+        started = now_fn()
+        client = (client_factory or SinaSpotClient)(source_client=source_client)
+        fresh = client.fetch_spot_frame("hs_a")
+        if fresh is None or fresh.empty:
+            raise RuntimeError("新浪全市场快照为空")
+        fresh.attrs["fetched_at"] = started.isoformat()
+        fresh.attrs["data_source"] = "新浪"
+        with _SHARED_LOCK:
+            # 记开始拉取的时间：收盘前开始、收盘后才拉完的快照不能算"收盘后的最终状态"
+            _SHARED_STATE.update(frame=fresh, fetched_at=started)
+        return fresh
+
+
+def clear_shared_spot_frame() -> None:
+    with _SHARED_LOCK:
+        _SHARED_STATE.update(frame=None, fetched_at=None)

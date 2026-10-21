@@ -178,8 +178,9 @@ class MarketSentimentAnalyzer:
 
     def _breadth_from_sina(self) -> Optional[Tuple[int, int, int]]:
         try:
-            from sina_spot_client import SinaSpotClient
-            frame = SinaSpotClient(source_client=getattr(self.fetcher, 'source_client', None)).fetch_spot_frame('hs_a')
+            # 与情绪闸共用同一份全市场快照（进程内单飞、收盘后不重拉），不再各拉一份 56 页
+            from sina_spot_client import get_shared_spot_frame
+            frame = get_shared_spot_frame(getattr(self.fetcher, 'source_client', None), max_age=_BREADTH_TTL)
             if frame is not None and len(frame) > 1000:
                 change = pd.to_numeric(frame['涨跌幅'], errors='coerce').dropna()
                 return int((change > 0).sum()), int((change < 0).sum()), int(len(change))

@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -43,6 +44,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from logger_config import get_logger
+from market_clock import TZ as _MARKET_TZ
+from market_clock import snapshot_is_final
 
 logger = get_logger(__name__)
 
@@ -156,7 +159,14 @@ class MarketEmotionFilter:
 
         # 内部缓存
         self._spot_cache: Optional[pd.DataFrame] = None
-        self._spot_cached_at: float = 0.0
+        self._spot_cached_at: float = 0.0          # 快照的取数时间（epoch 秒）
+        self._spot_source: str = ""                # 新浪 / 东方财富 / 落盘快照（…）
+        self._spot_stale: bool = False             # 重启后先顶上的落盘快照，还没刷新成当前数据
+        self._spot_lock = threading.Lock()         # 单飞：同一时间只取一次快照
+        self._spot_flag_lock = threading.Lock()
+        self._spot_refreshing: bool = False
+        self._trading_day = None                   # 可注入交易日判断（测试用），默认见 market_clock
+        self._clock = time.time                    # 可注入时钟（测试用）
         self._leader_pool_cache: Optional[List[str]] = None
         self._leader_pool_cached_at: float = 0.0
         self._leader_metrics: Dict[str, Dict[str, Optional[float]]] = {}  # 龙头近期涨幅/昨日涨跌
@@ -187,36 +197,172 @@ class MarketEmotionFilter:
         return ""
 
     SPOT_STALE_MAX = 1800  # 秒：快照源失败时，最多接受多旧的过期快照（大面率分钟级误差可接受）
+    SPOT_COLUMNS = ("代码", "名称", "最新价", "涨跌幅", "换手率")  # 落盘只保留用得到的列
 
     def _get_spot_snapshot(self, force: bool = False) -> Optional[pd.DataFrame]:
-        """获取全 A 实时快照（含 代码/名称/涨跌幅/换手率），带 TTL 缓存。
+        """获取全 A 快照（含 代码/名称/最新价/涨跌幅/换手率）。
 
-        取数失败时退回 30 分钟内的过期快照（降级），彻底没有才返回 None。
+        - 数据源：新浪全市场快照（直连、进程内共享）优先，失败退回东方财富；
+        - 盘中按 spot_cache_ttl 刷新；午休、收盘后、节假日只要快照取于最近一次收盘之后就不再重拉；
+        - 刚重启时先用落盘快照：收盘后取的直接当当前数据用；盘中 30 分钟内的先顶上
+          （标"陈旧"，执行闸会暂停开仓）并在后台立刻刷新，请求不用等；
+        - 取数失败退回 30 分钟内的旧快照（降级），彻底没有才返回 None。
         """
-        now = time.time()
-        if (
-            not force
-            and self._spot_cache is not None
-            and (now - self._spot_cached_at) < self.config.spot_cache_ttl
-        ):
+        now = self._clock()
+        if not force and not self._spot_stale and self._spot_current(now):
             return self._spot_cache
 
-        if ak is not None:
-            try:
-                df = ak.stock_zh_a_spot_em()
-                if df is not None and not df.empty:
-                    self._spot_cache = df
-                    self._spot_cached_at = now
-                    return df
-                logger.warning("全A快照为空")
-            except Exception as exc:
-                logger.warning(f"获取全A快照失败: {exc}")
+        if not force and self._spot_cache is None:
+            self._restore_spot_file()
+            if self._spot_cache is not None:
+                if self._spot_current(now):
+                    logger.info(f"全A快照从落盘文件恢复（{self._spot_as_of()}，收盘后数据，直接使用）")
+                    return self._spot_cache
+                if (now - self._spot_cached_at) < self.SPOT_STALE_MAX:
+                    logger.info(f"全A快照先用落盘文件（{self._spot_as_of()}），后台刷新")
+                    self._spot_stale = True
+                    self._refresh_spot_async()
+                    return self._spot_cache
+
+        if not force and self._spot_stale and self._spot_refreshing \
+                and (now - self._spot_cached_at) < self.SPOT_STALE_MAX:
+            return self._spot_cache  # 后台正在刷新：不让请求等
+
+        df = self._fetch_spot_locked(force=force)
+        if df is not None:
+            return df
 
         # 降级：手里的过期快照好过没有
         if self._spot_cache is not None and (now - self._spot_cached_at) < self.SPOT_STALE_MAX:
             logger.info(f"全A快照降级：使用 {(now - self._spot_cached_at) / 60:.0f} 分钟前的旧快照")
             return self._spot_cache
         return None
+
+    def _spot_current(self, now: float) -> bool:
+        """手里的快照能否直接用：收盘后取的最终快照，或盘中 TTL 内。"""
+        if self._spot_cache is None or self._spot_cached_at <= 0:
+            return False
+        fetched = datetime.fromtimestamp(self._spot_cached_at, _MARKET_TZ)
+        if snapshot_is_final(fetched, datetime.fromtimestamp(now, _MARKET_TZ), self._trading_day):
+            return True
+        return (now - self._spot_cached_at) < self.config.spot_cache_ttl
+
+    def _spot_as_of(self) -> str:
+        if self._spot_cache is None or self._spot_cached_at <= 0:
+            return ""
+        return datetime.fromtimestamp(self._spot_cached_at, _MARKET_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _fetch_spot_from_sources(self) -> Tuple[Optional[pd.DataFrame], str, Optional[float]]:
+        """依次试新浪（经 DataFetcher 共享快照）、东方财富。返回 (快照, 来源, 取数时间)。"""
+        getter = getattr(self.fetcher, "get_market_spot_frame", None)
+        if callable(getter):
+            try:
+                df = getter(max_age=self.config.spot_cache_ttl)
+                if df is not None and not df.empty:
+                    fetched_at = None
+                    raw = df.attrs.get("fetched_at") if hasattr(df, "attrs") else None
+                    if raw:
+                        try:
+                            fetched_at = datetime.fromisoformat(str(raw)).timestamp()
+                        except ValueError:
+                            fetched_at = None
+                    return df, "新浪", fetched_at
+                logger.warning("新浪全市场快照为空")
+            except Exception as exc:
+                logger.warning(f"新浪全市场快照失败，改用东方财富: {exc}")
+        if ak is not None:
+            try:
+                df = ak.stock_zh_a_spot_em()
+                if df is not None and not df.empty:
+                    return df, "东方财富", None
+                logger.warning("全A快照为空")
+            except Exception as exc:
+                logger.warning(f"获取全A快照失败: {exc}")
+        return None, "", None
+
+    def _fetch_spot_locked(self, force: bool = False) -> Optional[pd.DataFrame]:
+        """单飞取快照：别的线程正在取就等它的结果。成功时更新内存与落盘，失败返回 None。"""
+        with self._spot_lock:
+            now = self._clock()
+            if not force and not self._spot_stale and self._spot_current(now):
+                return self._spot_cache  # 等锁期间别的线程已取完
+            started = self._clock()
+            df, source, fetched_at = self._fetch_spot_from_sources()
+            if df is None:
+                return None
+            self._spot_cache = df
+            self._spot_cached_at = fetched_at or started
+            self._spot_source = source
+            self._spot_stale = False
+            self._save_spot_file()
+            return df
+
+    def _refresh_spot_async(self) -> None:
+        with self._spot_flag_lock:
+            if self._spot_refreshing:
+                return
+            self._spot_refreshing = True
+
+        def run():
+            try:
+                self._fetch_spot_locked(force=True)
+            except Exception as exc:  # 后台刷新失败：保留落盘快照，下一次请求再试
+                logger.warning(f"后台刷新全A快照失败: {exc}")
+            finally:
+                with self._spot_flag_lock:
+                    self._spot_refreshing = False
+
+        threading.Thread(target=run, daemon=True, name="emotion-spot-refresh").start()
+
+    # ---- 快照落盘：重启后不用先等一遍全市场行情 ----
+
+    def _spot_file(self) -> Optional[Path]:
+        """只有真实 DataFetcher（带缓存目录）才落盘；测试里的假数据源不写文件。"""
+        cache_dir = getattr(getattr(self.fetcher, "cache_manager", None), "cache_dir", None)
+        return Path(cache_dir) / "emotion_spot.json" if cache_dir else None
+
+    def _save_spot_file(self) -> None:
+        path = self._spot_file()
+        if path is None or self._spot_cache is None:
+            return
+        try:
+            cols = {}
+            for key in self.SPOT_COLUMNS:
+                col = self._find_col(self._spot_cache, key)
+                if col is not None:
+                    cols[key] = col
+            if "代码" not in cols or "涨跌幅" not in cols:
+                return
+            frame = self._spot_cache[list(cols.values())].copy()
+            frame.columns = list(cols.keys())
+            frame["代码"] = frame["代码"].astype(str).str.zfill(6)
+            payload = {
+                "ts": self._spot_cached_at,
+                "source": self._spot_source,
+                "columns": list(frame.columns),
+                "rows": frame.astype(object).where(frame.notna(), None).values.tolist(),
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            logger.debug(f"全A快照落盘失败: {exc}")
+
+    def _restore_spot_file(self) -> None:
+        path = self._spot_file()
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            frame = pd.DataFrame(payload["rows"], columns=payload["columns"])
+            if frame.empty or "代码" not in frame.columns:
+                return
+            frame["代码"] = frame["代码"].astype(str).str.zfill(6)
+            self._spot_cache = frame
+            self._spot_cached_at = float(payload.get("ts") or 0)
+            self._spot_source = f"落盘快照（{payload.get('source') or '未知来源'}）"
+        except Exception as exc:
+            logger.debug(f"读取全A快照落盘文件失败: {exc}")
 
     @staticmethod
     def _find_col(df: pd.DataFrame, *keywords: str) -> Optional[str]:
@@ -302,10 +448,10 @@ class MarketEmotionFilter:
         """
         try:
             lookback = self.config.leader_lookback_days
-            df = self.fetcher.get_stock_history(code, days=lookback + 12)
-            if df is None or "close" not in df.columns:
+            series = self._recent_closes(code, days=lookback + 12)
+            if series is None:
                 return None
-            closes = pd.to_numeric(df["close"], errors="coerce").dropna().reset_index(drop=True)
+            closes = pd.Series(series, dtype="float64").dropna().reset_index(drop=True)
             if len(closes) < lookback + 1:
                 return None
 
@@ -331,6 +477,30 @@ class MarketEmotionFilter:
             return {"recent_return": recent_return, "prev_change": prev_change, "spark": spark}
         except Exception:
             return None
+
+    def _recent_closes(self, code: str, days: int) -> Optional[List[float]]:
+        """最近若干个已收盘交易日的收盘价（升序）。
+
+        优先腾讯前复权日 K（直连、可并发，龙头池 100 多只票几秒拉完）；
+        只取到"已收盘"的那一天（15:10 前不含当天），与原来新浪日 K 的口径一致。
+        腾讯失败时退回 DataFetcher.get_stock_history（AKShare，较慢）。
+        """
+        client = getattr(self.fetcher, "source_client", None)
+        if client is not None:
+            try:
+                from signal_journal import bars_complete_until, now_sh, tencent_bars
+
+                until = bars_complete_until(now_sh()).isoformat()
+                bars = tencent_bars(client, code, count=days + 2)
+                closes = [float(b["close"]) for b in bars if str(b["date"]) <= until]
+                if closes:
+                    return closes[-days:]
+            except Exception as exc:
+                logger.debug(f"腾讯日K失败 {code}，改用 AKShare: {exc}")
+        df = self.fetcher.get_stock_history(code, days=days)
+        if df is None or "close" not in df.columns:
+            return None
+        return pd.to_numeric(df["close"], errors="coerce").dropna().tolist()
 
     def _build_leader_pool(self, force: bool = False) -> List[str]:
         """构建趋势龙头池：换手活跃 + 近期涨幅前 N。返回股票代码列表，带 TTL 缓存。
@@ -364,6 +534,9 @@ class MarketEmotionFilter:
         spot = self._get_spot_snapshot()
         if spot is None:
             return self._leader_pool_cache or []
+        if self._spot_stale and self._leader_pool_cache:
+            # 手里只有重启前的落盘快照：先沿用旧池子，等当前快照到了再重建，别用旧数据选新池子
+            return self._leader_pool_cache
 
         try:
             code_col = self._find_col(spot, "代码")
@@ -713,7 +886,15 @@ class MarketEmotionFilter:
             "cached": False,
             "dimensions": dimensions,
             "position": PositionManager.decide(total),
+            "spot_as_of": self._spot_as_of(),
+            "spot_source": self._spot_source,
         }
+        if self._spot_stale:
+            # 重启后先顶上的落盘快照：如实标"陈旧"（执行闸会暂停开仓），也不进结果缓存，
+            # 后台快照刷新完，下一次计算就是当前数据
+            result["stale"] = True
+            result["stale_reason"] = f"刚重启，先用 {self._spot_as_of()} 的落盘快照，正在刷新"
+            return result
         self._result_cache = result
         self._result_cached_at = now
         return result

@@ -271,5 +271,172 @@ class IntegrationScoreTest(unittest.TestCase):
         self.assertEqual(result["level"], "退潮")
 
 
+
+# ---------------------------------------------------------------------------
+# 快照数据源 / 落盘 / 冷启动 / 非交易时段（2026-10 卡顿排查后的改造）
+# ---------------------------------------------------------------------------
+import threading  # noqa: E402
+from datetime import datetime  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+import pytest  # noqa: E402
+
+import signal_journal  # noqa: E402
+from market_clock import TZ  # noqa: E402
+
+
+def _ts(y, m, d, hh, mm):
+    return datetime(y, m, d, hh, mm, tzinfo=TZ).timestamp()
+
+
+class _SinaFetcher(_FakeFetcher):
+    """带新浪共享快照与缓存目录的假数据源。"""
+
+    def __init__(self, cache_dir=None, frame_fn=None, **kw):
+        super().__init__(**kw)
+        self.frame_fn = frame_fn or _spot_df
+        self.calls = 0
+        if cache_dir is not None:
+            self.cache_manager = SimpleNamespace(cache_dir=str(cache_dir))
+
+    def get_market_spot_frame(self, max_age=60.0):
+        self.calls += 1
+        return self.frame_fn()
+
+
+def _weekday(day):
+    return day.weekday() < 5
+
+
+def _filter(fetcher, now_ts):
+    flt = MarketEmotionFilter(data_fetcher=fetcher)
+    flt._trading_day = _weekday
+    flt._clock = lambda: now_ts
+    return flt
+
+
+def test_prefers_sina_frame_over_eastmoney():
+    fetcher = _SinaFetcher()
+    flt = _filter(fetcher, _ts(2026, 10, 21, 10, 0))
+    with patch.object(mef.ak, "stock_zh_a_spot_em", side_effect=AssertionError("不应调用东财")):
+        got = flt._get_spot_snapshot()
+    assert list(got["代码"]) == list(_spot_df()["代码"])
+    assert flt._spot_source == "新浪" and fetcher.calls == 1
+
+
+def test_falls_back_to_eastmoney_when_sina_fails():
+    def down():
+        raise RuntimeError("新浪挂了")
+
+    flt = _filter(_SinaFetcher(frame_fn=down), _ts(2026, 10, 21, 10, 0))
+    with patch.object(mef.ak, "stock_zh_a_spot_em", return_value=_spot_df()):
+        got = flt._get_spot_snapshot()
+    assert got is not None and flt._spot_source == "东方财富"
+
+
+def test_no_refetch_in_lunch_break_once_snapshot_is_after_lunch_close():
+    fetcher = _SinaFetcher()
+    flt = _filter(fetcher, _ts(2026, 10, 21, 12, 40))
+    flt._spot_cache = _spot_df()
+    flt._spot_cached_at = _ts(2026, 10, 21, 11, 33)    # 午间收盘后取的
+    assert flt._get_spot_snapshot() is flt._spot_cache
+    assert fetcher.calls == 0
+    # 同样的快照到了下午开盘就过期了，要重拉
+    flt._clock = lambda: _ts(2026, 10, 21, 13, 5)
+    flt._get_spot_snapshot()
+    assert fetcher.calls == 1
+
+
+def test_snapshot_persisted_and_restored_after_close(tmp_path):
+    frame = _spot_df()
+    frame.attrs["fetched_at"] = datetime(2026, 10, 21, 15, 5, tzinfo=TZ).isoformat()
+    first = _filter(_SinaFetcher(cache_dir=tmp_path, frame_fn=lambda: frame), _ts(2026, 10, 21, 15, 6))
+    first._get_spot_snapshot()
+    assert (tmp_path / "emotion_spot.json").exists()
+
+    def boom():
+        raise AssertionError("收盘后的落盘快照就是当前状态，不应重拉")
+
+    restarted = _filter(_SinaFetcher(cache_dir=tmp_path, frame_fn=boom), _ts(2026, 10, 21, 20, 0))
+    got = restarted._get_spot_snapshot()
+    assert list(got["代码"]) == list(frame["代码"])
+    assert list(got["换手率"]) == list(frame["换手率"])
+    assert restarted._spot_stale is False and restarted._spot_source.startswith("落盘快照")
+
+
+def test_cold_start_in_session_serves_disk_snapshot_and_refreshes_in_background(tmp_path):
+    now = _ts(2026, 10, 21, 10, 30)
+    seed = _filter(_SinaFetcher(cache_dir=tmp_path), now - 300)
+    seed._get_spot_snapshot()                      # 5 分钟前落过一次盘
+
+    release = threading.Event()
+    fresh = _spot_df().assign(涨跌幅=[1.0] * 6)
+
+    def slow():
+        release.wait(5)
+        return fresh
+
+    fetcher = _SinaFetcher(cache_dir=tmp_path, frame_fn=slow)
+    flt = _filter(fetcher, now)
+    started = time.monotonic()
+    got = flt._get_spot_snapshot()
+    assert time.monotonic() - started < 1.0        # 不等新快照
+    assert list(got["涨跌幅"]) == list(_spot_df()["涨跌幅"])
+    assert flt._spot_stale is True
+
+    release.set()
+    for _ in range(100):
+        if not flt._spot_stale:
+            break
+        time.sleep(0.02)
+    assert flt._spot_stale is False
+    assert list(flt._get_spot_snapshot()["涨跌幅"]) == [1.0] * 6
+
+
+def test_old_disk_snapshot_in_session_is_not_used(tmp_path):
+    now = _ts(2026, 10, 21, 10, 30)
+    seed = _filter(_SinaFetcher(cache_dir=tmp_path), now - 3 * 3600)   # 3 小时前
+    seed._get_spot_snapshot()
+    fetcher = _SinaFetcher(cache_dir=tmp_path)
+    flt = _filter(fetcher, now)
+    flt._get_spot_snapshot()
+    assert fetcher.calls == 1 and flt._spot_stale is False             # 当场取新的
+
+
+def test_stale_snapshot_marks_result_and_skips_result_cache():
+    flt = MarketEmotionFilter(data_fetcher=_FakeFetcher())
+    flt._spot_stale = True
+    flt._spot_cache = _spot_df()
+    flt._spot_cached_at = time.time() - 120
+    with patch.object(flt, "get_prev_limitup_detail",
+                      return_value={"avg": 1.0, "count": 1, "up_count": 1, "down_count": 0, "items": []}), \
+         patch.object(flt, "get_leader_blowup_rate",
+                      return_value={"rate": 0.0, "total": 3, "blown": 0, "threshold_pct": -7.0, "items": []}), \
+         patch.object(flt, "get_limit_down_count", return_value=3):
+        result = flt.calculate_emotion_score()
+    assert result["stale"] is True and "落盘快照" in result["stale_reason"]
+    assert flt._result_cache is None
+
+
+def test_leader_pool_not_rebuilt_from_stale_snapshot():
+    flt = MarketEmotionFilter(data_fetcher=_FakeFetcher())
+    flt._leader_pool_cache = ["600009"]
+    flt._leader_pool_cached_at = time.time() - 99999      # 过期
+    flt._spot_stale = True
+    with patch.object(flt, "_get_spot_snapshot", return_value=_spot_df()):
+        assert flt._build_leader_pool() == ["600009"]
+
+
+def test_recent_closes_use_tencent_and_skip_todays_partial_bar(monkeypatch):
+    bars = [{"date": f"2026-10-{d:02d}", "open": 1, "close": float(d), "high": 1, "low": 1} for d in range(8, 22)]
+    monkeypatch.setattr(signal_journal, "tencent_bars", lambda client, code, count=260: bars)
+    monkeypatch.setattr(signal_journal, "now_sh", lambda: datetime(2026, 10, 21, 10, 0, tzinfo=TZ))
+    fetcher = _FakeFetcher()
+    fetcher.source_client = object()
+    fetcher.get_stock_history = lambda *a, **k: pytest.fail("腾讯可用时不应走 AKShare")
+    closes = MarketEmotionFilter(data_fetcher=fetcher)._recent_closes("002080", days=5)
+    assert closes == [16.0, 17.0, 18.0, 19.0, 20.0]   # 盘中不含当天（21 日）的未完成 K 线
+
+
 if __name__ == "__main__":
     unittest.main()

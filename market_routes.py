@@ -12,7 +12,7 @@ from exceptions import raise_if_invalid_stock_code
 from logger_config import get_logger
 from research_conclusion import build_final_conclusion
 from single_flight_cache import SingleFlightCache, SwrCache
-from api_response import ok
+from api_response import fail, ok
 from news_weighting import apply_dragon_news
 from workbench_service import (
     apply_candidate_risk_precheck,
@@ -630,36 +630,26 @@ def zt_pool():
     return ok(payload.get('data'), meta=meta)
 
 
+_DIRECTORY = None
+_DIRECTORY_LOCK = Lock()
+
+
+def get_stock_directory():
+    """股票代码 / 名称表（搜索联想用，落盘缓存 7 天、后台构建，见 stock_directory.py）。"""
+    global _DIRECTORY
+    if _DIRECTORY is None:
+        with _DIRECTORY_LOCK:
+            if _DIRECTORY is None:
+                from stock_directory import default_directory
+                _DIRECTORY = default_directory(data_fetcher)
+    return _DIRECTORY
+
+
 @market_bp.route('/api/search')
 def search_stocks():
-    """Search stocks by name or code"""
+    """按代码或名称搜股票。名单没准备好时最多等 2 秒，然后先返回空结果（meta.ready=false），不占住线程。"""
     query = request.args.get('q', '').strip()
     if not query:
-        return jsonify({'success': False, 'error': 'Query required'}), 400
-
-    df_inst = data_fetcher
-    stock_list = df_inst._get_cache("stock_list_all_a")
-    if not stock_list:
-        import akshare as ak
-        df_info = ak.stock_info_a_code_name()
-        if df_info is not None and not df_info.empty:
-            stock_list = df_info.to_dict('records')
-            df_inst._set_cache("stock_list_all_a", stock_list)
-
-    results = []
-    if stock_list:
-        count = 0
-        for item in stock_list:
-            code = str(item.get('code', ''))
-            name = str(item.get('name', ''))
-            if query in code or query in name:
-                results.append({
-                    'code': code,
-                    'name': name,
-                    'market': 'SH' if code.startswith(('6', '9')) else 'SZ'
-                })
-                count += 1
-                if count >= APILimitConstants.MAX_SEARCH_RESULTS:
-                    break
-
-    return jsonify({'success': True, 'data': results})
+        return fail('请输入代码或名称', status=400)
+    results, ready = get_stock_directory().search(query, APILimitConstants.MAX_SEARCH_RESULTS)
+    return ok(results, meta=None if ready else {'ready': False})

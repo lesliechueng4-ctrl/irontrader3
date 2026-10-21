@@ -733,6 +733,12 @@ class DataFetcher:
             logger.warning(f"获取股票 {clean_code} 实时数据失败: {e}")
             return {'error': str(e), 'code': clean_code, 'name': '未知'}
     
+    def get_market_spot_frame(self, max_age: float = 60.0) -> pd.DataFrame:
+        """新浪全市场快照（代码/名称/最新价/涨跌幅/换手率…），进程内共享、单飞，直连。失败抛异常。"""
+        from sina_spot_client import get_shared_spot_frame
+
+        return get_shared_spot_frame(self.source_client, max_age=max_age)
+
     def _check_limit_up(self, code: str, change_pct: float) -> bool:
         """Check limit-up status with board-aware thresholds."""
         return change_pct >= self._get_limit_up_threshold(code)
@@ -1052,7 +1058,12 @@ class DataFetcher:
         last_error = None
         for source_name, loader, volume_multiplier in history_loaders:
             try:
-                with _AKSHARE_HISTORY_LOCK:
+                if source_name == "stock_zh_a_daily":
+                    # 新浪日 K 每次都会新建一个 V8 引擎（py_mini_racer）解码数据，多线程同时跑会崩，只能串行；
+                    # 东方财富日 K 是普通 HTTP 请求，不需要排这把锁。
+                    with _AKSHARE_HISTORY_LOCK:
+                        raw_df = loader()
+                else:
                     raw_df = loader()
                 df = self._normalize_history_frame(
                     raw_df,

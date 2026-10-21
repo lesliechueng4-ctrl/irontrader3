@@ -5,6 +5,11 @@ import os
 import sys
 from flask import Flask
 
+# 国内行情网站直连、不走系统代理：必须在任何取数之前生效（原因见 net_policy.py）
+from net_policy import apply_domestic_direct
+
+_DIRECT_DOMAINS = apply_domestic_direct()
+
 from auth import init_auth
 from backtest_routes import backtest_bp
 from config import ChipQualityConfig, FlaskConfig
@@ -27,6 +32,10 @@ from scanner_routes import scanner_bp
 # 不再经由 app 模块转发。
 
 logger = get_logger(__name__)
+if _DIRECT_DOMAINS:
+    logger.info(f"国内行情域名直连（NO_PROXY，共 {len(_DIRECT_DOMAINS)} 项）")
+else:
+    logger.info("IRONTRADER_DIRECT_DOMESTIC=0：国内行情请求按系统代理设置走")
 
 # Initialize Flask
 _RESOURCE_DIR = application_resource_dir()
@@ -115,6 +124,14 @@ else:
     from news_catalyst import get_stock_news_safe as _news_lookup, get_stocks_news_bulk as _news_bulk
 
 init_market_routes(decision_maker, data_fetcher, _get_low_buy_engine, news_lookup=_news_lookup)
+
+# 搜索用的股票名单：启动时在后台准备好（读落盘缓存，过期才重建），第一次搜索不用等
+if 'pytest' not in sys.modules:
+    try:
+        import market_routes as _market_routes
+        _market_routes.get_stock_directory().warm()
+    except Exception as e:
+        logger.warning(f"预热股票名单失败: {e}")
 init_lowbuy_routes(lambda: data_fetcher, news_provider=_news_lookup, news_bulk_provider=_news_bulk)
 init_hero_routes(lambda: data_fetcher)
 init_intraday_routes(data_fetcher)
